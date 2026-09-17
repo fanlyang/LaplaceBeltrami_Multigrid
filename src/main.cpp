@@ -10,7 +10,9 @@
  * ------------------------------------------------------------------------ */
 
 #include <deal.II/base/function.h>
+#include <deal.II/base/memory_consumption.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
 
 #include <deal.II/lac/affine_constraints.h>
@@ -19,6 +21,7 @@
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
 
@@ -50,6 +53,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -355,16 +359,129 @@ namespace LaplaceBeltrami
    *
    * ================================================================== */
 
-  // Which preconditioner the outer CG iteration runs with.
-  // Change this constant to switch between the available choices.
-  enum class CgPreconditioner
+  // How the linear system is solved. Selected on the command line so that
+  // the alternatives can be compared without recompiling:
+  //
+  //   jacobi     CG preconditioned by Jacobi
+  //   ssor       CG preconditioned by SSOR
+  //   mg         CG preconditioned by one geometric multigrid V-cycle
+  //   mg-solver  the V-cycle used as the solver itself (defect correction)
+  //   direct     sparse direct factorisation (UMFPACK)
+  enum class Method
   {
-    jacobi,
-    ssor,
-    multigrid
+    cg_jacobi,
+    cg_ssor,
+    cg_mg,
+    mg_solver,
+    direct
   };
 
-  constexpr CgPreconditioner cg_preconditioner = CgPreconditioner::multigrid;
+  std::string
+  method_name(const Method method)
+  {
+    switch (method)
+      {
+        case Method::cg_jacobi:
+          return "cg-jacobi";
+        case Method::cg_ssor:
+          return "cg-ssor";
+        case Method::cg_mg:
+          return "cg-mg";
+        case Method::mg_solver:
+          return "mg-solver";
+        case Method::direct:
+          return "direct-umfpack";
+      }
+
+    return "unknown";
+  }
+
+  Method
+  parse_method(const std::string &name)
+  {
+    if (name == "jacobi")
+      return Method::cg_jacobi;
+    if (name == "ssor")
+      return Method::cg_ssor;
+    if (name == "mg")
+      return Method::cg_mg;
+    if (name == "mg-solver")
+      return Method::mg_solver;
+    if (name == "direct")
+      return Method::direct;
+
+    AssertThrow(false,
+                ExcMessage("Unknown method '" + name +
+                           "'. Use one of: jacobi, ssor, mg, mg-solver, "
+                           "direct."));
+    return Method::cg_mg;
+  }
+
+
+  // The discretisation error of one cycle, so that the accuracy reached by
+  // each method can be checked to agree.
+  struct Errors
+  {
+    double h1 = 0.0;
+    double l2 = 0.0;
+    double linf = 0.0;
+  };
+
+
+  // Everything one cycle of one method reports: one row of the benchmark
+  // table. The timings are wall-clock seconds and deliberately split, since
+  // the methods differ in where the work sits rather than only in how much
+  // of it there is: a direct factorisation does almost all of its work in
+  // t_pc_setup and none in t_solve, whereas an iterative method spreads the
+  // work the other way round.
+  struct SolveStats
+  {
+    std::string  method;
+    unsigned int cycle = 0;
+
+    unsigned int dofs   = 0;
+    unsigned int cells  = 0;
+    unsigned int levels = 0;
+
+    // CG iterations, V-cycles, or 1 for a direct solve.
+    unsigned int iterations = 0;
+
+    // False if the method ran out of its iteration budget before reaching
+    // the tolerance. For a method whose iteration count grows with the mesh
+    // this is a result rather than an error -- it is the point at which the
+    // method stops being usable -- so it is recorded and the run continues
+    // instead of aborting and losing the smaller problems too.
+    bool converged = true;
+
+    // Measured average residual reduction per step: (r_final/r_0)^(1/n).
+    double rate = 0.0;
+
+    // Final relative residual, ||f - A u|| / ||f||.
+    double residual = 0.0;
+
+    double t_setup    = 0.0; // DoFs, constraints, sparsity patterns
+    double t_assemble = 0.0; // system and level matrices
+    double t_pc_setup = 0.0; // preconditioner / hierarchy / factorisation
+    double t_solve    = 0.0; // the iteration itself
+    double t_error    = 0.0;
+    double t_output   = 0.0;
+
+    // Memory held by the deal.II objects we can account for explicitly.
+    double algebraic_mb = 0.0;
+
+    // Process peak resident set size. This is the number that also catches
+    // memory allocated inside a library, which is where a direct solver's
+    // fill-in lives and which algebraic_mb cannot see.
+    double peak_rss_mb = 0.0;
+
+    // Peak RSS measured against the RSS at startup, so that the interpreter
+    // and runtime overhead every process carries -- hundreds of megabytes
+    // for a deal.II binary under emulation -- do not swamp the part that
+    // actually depends on the problem. This is the number to plot.
+    double rss_growth_mb = 0.0;
+
+    Errors errors;
+  };
 
 
   template <int dim, int spacedim>
@@ -372,7 +489,10 @@ namespace LaplaceBeltrami
   {
   public:
     LaplaceBeltramiProblem(const unsigned int degree,
-                           const unsigned int n_refinement_cycles);
+                           const unsigned int n_refinement_cycles,
+                           const Method       method,
+                           const bool         write_output_files,
+                           const std::string &csv_path);
 
     void run();
 
@@ -388,15 +508,25 @@ namespace LaplaceBeltrami
     void assemble_multigrid();
 
     // -- solution ----------------------------------------------------
-    void solve();
+    SolveStats solve();
 
-    void solve_with_jacobi(SolverCG<Vector<double>> &solver);
-    void solve_with_ssor(SolverCG<Vector<double>> &solver);
-    void solve_with_multigrid(SolverCG<Vector<double>> &solver);
+    // One V-cycle on the existing level hierarchy. Built once and shared by
+    // the two multigrid-based methods, so that CG+MG and standalone MG are
+    // compared on exactly the same operator.
+    void prepare_multigrid();
+
+    SolveStats solve_cg_jacobi(double rhs_norm);
+    SolveStats solve_cg_ssor(double rhs_norm);
+    SolveStats solve_cg_mg(double rhs_norm);
+    SolveStats solve_mg_standalone(double rhs_norm);
+    SolveStats solve_direct();
 
     // -- post-processing ---------------------------------------------
-    void compute_error() const;
-    void output_results(const unsigned int cycle) const;
+    Errors compute_error() const;
+    void   output_results(const unsigned int cycle) const;
+
+    // Accounted-for memory of the deal.II objects, in megabytes.
+    double algebraic_memory_mb() const;
 
     // -- data --------------------------------------------------------
     Triangulation<dim, spacedim> triangulation;
@@ -415,6 +545,10 @@ namespace LaplaceBeltrami
     const unsigned int degree;
     const unsigned int n_refinement_cycles;
 
+    const Method      method;
+    const bool        write_output_files;
+    const std::string csv_path;
+
     // Geometric multigrid hierarchy: one operator and one interface
     // operator per level.
     MGLevelObject<SparsityPattern> mg_sparsity_patterns;
@@ -424,13 +558,38 @@ namespace LaplaceBeltrami
     MGLevelObject<SparseMatrix<double>> mg_interface_matrices;
 
     MGConstrainedDoFs mg_constrained_dofs;
+
+    // True once assemble_multigrid() has run. The Jacobi, SSOR and direct
+    // variants never call it, so nothing may touch the level objects, or
+    // account for their memory, unless this is set.
+    bool level_operators_built = false;
+
+    // The V-cycle built by prepare_multigrid(). Held as pointers because
+    // Multigrid keeps references to the smoother, the coarse solver and the
+    // transfer, so all of them have to outlive it.
+    using MgSmoother =
+      mg::SmootherRelaxation<PreconditionSOR<SparseMatrix<double>>,
+                             Vector<double>>;
+
+    std::unique_ptr<MGTransferPrebuilt<Vector<double>>> mg_transfer;
+    std::unique_ptr<FullMatrix<double>>                 mg_coarse_matrix;
+    std::unique_ptr<MGCoarseGridHouseholder<double, Vector<double>>>
+      mg_coarse_solver;
+    std::unique_ptr<MgSmoother>                 mg_smoother;
+    std::unique_ptr<mg::Matrix<Vector<double>>> mg_matrix;
+    std::unique_ptr<mg::Matrix<Vector<double>>> mg_interface_up;
+    std::unique_ptr<mg::Matrix<Vector<double>>> mg_interface_down;
+    std::unique_ptr<Multigrid<Vector<double>>>  mg;
   };
 
 
   template <int dim, int spacedim>
   LaplaceBeltramiProblem<dim, spacedim>::LaplaceBeltramiProblem(
     const unsigned int degree,
-    const unsigned int n_refinement_cycles)
+    const unsigned int n_refinement_cycles,
+    const Method       method,
+    const bool         write_output_files,
+    const std::string &csv_path)
     : triangulation(
         Triangulation<dim, spacedim>::limit_level_difference_at_vertices)
     , fe(degree)
@@ -438,6 +597,9 @@ namespace LaplaceBeltrami
     , mapping(degree)
     , degree(degree)
     , n_refinement_cycles(n_refinement_cycles)
+    , method(method)
+    , write_output_files(write_output_files)
+    , csv_path(csv_path)
   {}
 
 
@@ -491,44 +653,10 @@ namespace LaplaceBeltrami
     sparsity_pattern.copy_from(dsp);
     system_matrix.reinit(sparsity_pattern);
 
-
-    // -- constraints on the multigrid levels -------------------------
-    mg_constrained_dofs.clear();
-    mg_constrained_dofs.initialize(dof_handler);
-
-
-    // -- one matrix and one sparsity pattern per level ---------------
-    mg_matrices.resize(0, n_levels - 1);
-    mg_interface_matrices.resize(0, n_levels - 1);
-    mg_sparsity_patterns.resize(0, n_levels - 1);
-    mg_interface_sparsity_patterns.resize(0, n_levels - 1);
-
-    for (unsigned int level = 0; level < n_levels; ++level)
-      {
-        // The level matrix A_l.
-        DynamicSparsityPattern dsp_level(dof_handler.n_dofs(level),
-                                         dof_handler.n_dofs(level));
-
-        MGTools::make_sparsity_pattern(dof_handler, dsp_level, level);
-
-        mg_sparsity_patterns[level].copy_from(dsp_level);
-        mg_matrices[level].reinit(mg_sparsity_patterns[level]);
-
-
-        // The interface matrix, holding the entries that couple degrees
-        // of freedom across refinement edges.
-        DynamicSparsityPattern dsp_interface(dof_handler.n_dofs(level),
-                                             dof_handler.n_dofs(level));
-
-        MGTools::make_interface_sparsity_pattern(dof_handler,
-                                                 mg_constrained_dofs,
-                                                 dsp_interface,
-                                                 level);
-
-        mg_interface_sparsity_patterns[level].copy_from(dsp_interface);
-        mg_interface_matrices[level].reinit(
-          mg_interface_sparsity_patterns[level]);
-      }
+    // The multigrid level structures are deliberately *not* built here.
+    // They are built in assemble_multigrid(), which the Jacobi, SSOR and
+    // direct variants skip: a method should only be charged for the
+    // machinery it actually uses.
   }
 
 
@@ -669,6 +797,47 @@ namespace LaplaceBeltrami
   {
     const unsigned int n_levels = triangulation.n_levels();
 
+    // -- constraints on the multigrid levels -------------------------
+    mg_constrained_dofs.clear();
+    mg_constrained_dofs.initialize(dof_handler);
+
+
+    // -- one matrix and one sparsity pattern per level ---------------
+    mg_matrices.resize(0, n_levels - 1);
+    mg_interface_matrices.resize(0, n_levels - 1);
+    mg_sparsity_patterns.resize(0, n_levels - 1);
+    mg_interface_sparsity_patterns.resize(0, n_levels - 1);
+
+    for (unsigned int level = 0; level < n_levels; ++level)
+      {
+        // The level matrix A_l.
+        DynamicSparsityPattern dsp_level(dof_handler.n_dofs(level),
+                                         dof_handler.n_dofs(level));
+
+        MGTools::make_sparsity_pattern(dof_handler, dsp_level, level);
+
+        mg_sparsity_patterns[level].copy_from(dsp_level);
+        mg_matrices[level].reinit(mg_sparsity_patterns[level]);
+
+
+        // The interface matrix, holding the entries that couple degrees
+        // of freedom across refinement edges.
+        DynamicSparsityPattern dsp_interface(dof_handler.n_dofs(level),
+                                             dof_handler.n_dofs(level));
+
+        MGTools::make_interface_sparsity_pattern(dof_handler,
+                                                 mg_constrained_dofs,
+                                                 dsp_interface,
+                                                 level);
+
+        mg_interface_sparsity_patterns[level].copy_from(dsp_interface);
+        mg_interface_matrices[level].reinit(
+          mg_interface_sparsity_patterns[level]);
+      }
+
+    level_operators_built = true;
+
+
     // -- one constraint object per level -----------------------------
     //
     // Degrees of freedom sitting on refinement edges are eliminated:
@@ -743,117 +912,332 @@ namespace LaplaceBeltrami
    *
    * 9. Solution
    *
+   * Five ways of solving the same linear system, one per entry of the
+   * Method enum. Each returns the timings and iteration counts that make
+   * up one row of the benchmark table, and leaves `solution` filled in.
+   *
+   * The split between t_pc_setup and t_solve is the telling one. A Krylov
+   * method with a cheap preconditioner puts everything into t_solve.
+   * Multigrid puts a noticeable amount into t_pc_setup, because it has to
+   * build the level hierarchy before it can invert anything. A direct
+   * solver puts almost everything into t_pc_setup and almost nothing into
+   * t_solve, which is the whole shape of its cost.
+   *
    * ================================================================== */
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::solve()
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve()
   {
-    SolverControl solver_control(1000, 1e-10 * system_rhs.l2_norm());
-    SolverCG<Vector<double>> solver(solver_control);
+    const double rhs_norm = system_rhs.l2_norm();
 
     solution = 0;
 
-    // Which preconditioner is used is decided by the constant
-    // cg_preconditioner at the top of the file.
-    switch (cg_preconditioner)
+    SolveStats stats;
+    switch (method)
       {
-        case CgPreconditioner::jacobi:
-          solve_with_jacobi(solver);
+        case Method::cg_jacobi:
+          stats = solve_cg_jacobi(rhs_norm);
           break;
 
-        case CgPreconditioner::ssor:
-          solve_with_ssor(solver);
+        case Method::cg_ssor:
+          stats = solve_cg_ssor(rhs_norm);
           break;
 
-        case CgPreconditioner::multigrid:
-          solve_with_multigrid(solver);
+        case Method::cg_mg:
+          stats = solve_cg_mg(rhs_norm);
+          break;
+
+        case Method::mg_solver:
+          stats = solve_mg_standalone(rhs_norm);
+          break;
+
+        case Method::direct:
+          stats = solve_direct();
           break;
       }
 
-    std::cout << "   Number of CG iterations: " << solver_control.last_step()
-              << std::endl;
+    // The residual actually achieved, measured the same way for every
+    // method. It is taken before the hanging-node values are filled in,
+    // because that is the residual the assembled system and every solver
+    // above actually see: the constrained rows are unit rows with a zero
+    // right-hand side, so they contribute nothing.
+    Vector<double> residual(system_rhs.size());
+    system_matrix.vmult(residual, solution);
+    residual -= system_rhs;
+    stats.residual = residual.l2_norm() / rhs_norm;
+
+    // Average residual reduction per step, from the measured final
+    // residual. Since every method starts from u = 0, the initial relative
+    // residual is 1 by construction.
+    if (stats.iterations > 0)
+      stats.rate = std::pow(stats.residual, 1.0 / stats.iterations);
 
     // Make the constrained degrees of freedom consistent with the ones
     // they are hanging from.
     constraints.distribute(solution);
+
+    // The numbers themselves are reported once, by print_stats(), together
+    // with the memory and the timings they belong with.
+    return stats;
   }
 
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::solve_with_jacobi(
-    SolverCG<Vector<double>> &solver)
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve_cg_jacobi(
+    const double rhs_norm)
   {
-    std::cout << "   CG preconditioner: Jacobi" << std::endl;
+    SolveStats stats;
+    stats.method = method_name(Method::cg_jacobi);
+
+    std::cout << "   Method: CG preconditioned by Jacobi" << std::endl;
+
+    SolverControl            solver_control(1000, 1e-10 * rhs_norm);
+    SolverCG<Vector<double>> solver(solver_control);
 
     PreconditionJacobi<SparseMatrix<double>> preconditioner;
-    preconditioner.initialize(system_matrix);
 
-    solver.solve(system_matrix, solution, system_rhs, preconditioner);
+    Timer timer;
+    timer.start();
+    preconditioner.initialize(system_matrix);
+    stats.t_pc_setup = timer.wall_time();
+
+    timer.restart();
+    try
+      {
+        solver.solve(system_matrix, solution, system_rhs, preconditioner);
+      }
+    catch (const SolverControl::NoConvergence &)
+      {
+        // Budget exhausted. Keep the latest iterate: the residual it
+        // achieves is reported along with everything else.
+        stats.converged = false;
+      }
+    stats.t_solve = timer.wall_time();
+
+    stats.iterations = solver_control.last_step();
+
+    return stats;
   }
 
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::solve_with_ssor(
-    SolverCG<Vector<double>> &solver)
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve_cg_ssor(
+    const double rhs_norm)
   {
-    std::cout << "   CG preconditioner: SSOR" << std::endl;
+    SolveStats stats;
+    stats.method = method_name(Method::cg_ssor);
+
+    std::cout << "   Method: CG preconditioned by SSOR" << std::endl;
+
+    SolverControl            solver_control(1000, 1e-10 * rhs_norm);
+    SolverCG<Vector<double>> solver(solver_control);
 
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
-    preconditioner.initialize(system_matrix);
 
-    solver.solve(system_matrix, solution, system_rhs, preconditioner);
+    Timer timer;
+    timer.start();
+    preconditioner.initialize(system_matrix);
+    stats.t_pc_setup = timer.wall_time();
+
+    timer.restart();
+    try
+      {
+        solver.solve(system_matrix, solution, system_rhs, preconditioner);
+      }
+    catch (const SolverControl::NoConvergence &)
+      {
+        stats.converged = false;
+      }
+    stats.t_solve = timer.wall_time();
+
+    stats.iterations = solver_control.last_step();
+
+    return stats;
   }
 
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::solve_with_multigrid(
-    SolverCG<Vector<double>> &solver)
+  void LaplaceBeltramiProblem<dim, spacedim>::prepare_multigrid()
   {
-    std::cout << "   CG preconditioner: geometric multigrid" << std::endl;
-
     // -- transfer between the level and the global numbering ---------
-    MGTransferPrebuilt<Vector<double>> mg_transfer(mg_constrained_dofs);
-    mg_transfer.build(dof_handler);
+    mg_transfer = std::make_unique<MGTransferPrebuilt<Vector<double>>>(
+      mg_constrained_dofs);
+    mg_transfer->build(dof_handler);
 
     // -- coarse grid solver ------------------------------------------
-    FullMatrix<double> coarse_matrix;
-    coarse_matrix.copy_from(mg_matrices[0]);
+    mg_coarse_matrix = std::make_unique<FullMatrix<double>>();
+    mg_coarse_matrix->copy_from(mg_matrices[0]);
 
-    MGCoarseGridHouseholder<double, Vector<double>> coarse_grid_solver;
-    coarse_grid_solver.initialize(coarse_matrix);
+    mg_coarse_solver =
+      std::make_unique<MGCoarseGridHouseholder<double, Vector<double>>>();
+    mg_coarse_solver->initialize(*mg_coarse_matrix);
 
     // -- smoother ----------------------------------------------------
-    using Smoother = PreconditionSOR<SparseMatrix<double>>;
-
-    mg::SmootherRelaxation<Smoother, Vector<double>> mg_smoother;
-    mg_smoother.initialize(mg_matrices);
-    mg_smoother.set_steps(2);
-    mg_smoother.set_symmetric(true);
+    mg_smoother = std::make_unique<MgSmoother>();
+    mg_smoother->initialize(mg_matrices);
+    mg_smoother->set_steps(2);
+    mg_smoother->set_symmetric(true);
 
     // -- level and interface operators -------------------------------
-    mg::Matrix<Vector<double>> mg_matrix(mg_matrices);
+    mg_matrix = std::make_unique<mg::Matrix<Vector<double>>>(mg_matrices);
 
-    mg::Matrix<Vector<double>> mg_interface_up(mg_interface_matrices);
-    mg::Matrix<Vector<double>> mg_interface_down(mg_interface_matrices);
+    mg_interface_up =
+      std::make_unique<mg::Matrix<Vector<double>>>(mg_interface_matrices);
+    mg_interface_down =
+      std::make_unique<mg::Matrix<Vector<double>>>(mg_interface_matrices);
 
     // -- the V-cycle -------------------------------------------------
-    Multigrid<Vector<double>> mg(mg_matrix,
-                                 coarse_grid_solver,
-                                 mg_transfer,
-                                 mg_smoother,
-                                 mg_smoother);
+    mg = std::make_unique<Multigrid<Vector<double>>>(*mg_matrix,
+                                                     *mg_coarse_solver,
+                                                     *mg_transfer,
+                                                     *mg_smoother,
+                                                     *mg_smoother);
 
-    mg.set_edge_matrices(mg_interface_down, mg_interface_up);
+    mg->set_edge_matrices(*mg_interface_down, *mg_interface_up);
+  }
 
+
+  template <int dim, int spacedim>
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve_cg_mg(
+    const double rhs_norm)
+  {
+    SolveStats stats;
+    stats.method = method_name(Method::cg_mg);
+
+    std::cout << "   Method: CG preconditioned by a multigrid V-cycle"
+              << std::endl;
+
+    SolverControl            solver_control(1000, 1e-10 * rhs_norm);
+    SolverCG<Vector<double>> solver(solver_control);
+
+    Timer timer;
+    timer.start();
+    prepare_multigrid();
+    stats.t_pc_setup = timer.wall_time();
 
     PreconditionMG<dim,
                    Vector<double>,
                    MGTransferPrebuilt<Vector<double>>,
                    spacedim>
-      mg_preconditioner(dof_handler, mg, mg_transfer);
+      mg_preconditioner(dof_handler, *mg, *mg_transfer);
 
     // -- outer CG iteration ------------------------------------------
-    solver.solve(system_matrix, solution, system_rhs, mg_preconditioner);
+    timer.restart();
+    try
+      {
+        solver.solve(system_matrix, solution, system_rhs, mg_preconditioner);
+      }
+    catch (const SolverControl::NoConvergence &)
+      {
+        stats.converged = false;
+      }
+    stats.t_solve = timer.wall_time();
+
+    stats.iterations = solver_control.last_step();
+
+    return stats;
+  }
+
+
+  template <int dim, int spacedim>
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve_mg_standalone(
+    const double rhs_norm)
+  {
+    SolveStats stats;
+    stats.method = method_name(Method::mg_solver);
+
+    std::cout << "   Method: multigrid as the solver, by defect correction"
+              << std::endl;
+
+    Timer timer;
+    timer.start();
+    prepare_multigrid();
+    stats.t_pc_setup = timer.wall_time();
+
+    // The very same operator that CG is handed as a preconditioner. A
+    // Multigrid object cannot be applied to a global vector directly -- its
+    // cycle() works on its own multilevel vectors -- so the object that
+    // carries the level transfer, PreconditionMG, is what applies one
+    // V-cycle here. Using it means CG+MG and standalone MG differ only in
+    // the outer iteration, which is exactly the comparison being made.
+    PreconditionMG<dim,
+                   Vector<double>,
+                   MGTransferPrebuilt<Vector<double>>,
+                   spacedim>
+      vcycle(dof_handler, *mg, *mg_transfer);
+
+    // A V-cycle is not a direct solver: it is an approximate inverse, and
+    // used on its own it has to be iterated. This is the classical defect
+    // correction
+    //
+    //     u  <-  u + M^{-1} (f - A u),
+    //
+    // with no Krylov acceleration, so what comes out is the convergence
+    // rate of the V-cycle itself.
+    Vector<double> residual(system_rhs.size());
+    Vector<double> correction(system_rhs.size());
+
+    // r = f - A u. The sign matters: the correction is added to u, so a
+    // residual written the other way round turns convergent defect
+    // correction into a divergent Richardson iteration.
+    const auto compute_residual = [&]() {
+      system_matrix.vmult(residual, solution);
+      residual -= system_rhs;
+      residual *= -1.0;
+      return residual.l2_norm();
+    };
+
+    const double tolerance = 1e-10 * rhs_norm;
+
+    double       residual_norm = compute_residual();
+    unsigned int n_cycles      = 0;
+
+    timer.restart();
+    while (residual_norm > tolerance && n_cycles < 1000)
+      {
+        correction = 0;
+        vcycle.vmult(correction, residual);
+        solution += correction;
+        ++n_cycles;
+
+        residual_norm = compute_residual();
+      }
+    stats.t_solve    = timer.wall_time();
+    stats.iterations = n_cycles;
+    stats.converged  = (residual_norm <= tolerance);
+
+    return stats;
+  }
+
+
+  template <int dim, int spacedim>
+  SolveStats LaplaceBeltramiProblem<dim, spacedim>::solve_direct()
+  {
+    SolveStats stats;
+    stats.method = method_name(Method::direct);
+
+    std::cout << "   Method: sparse direct factorisation (UMFPACK)"
+              << std::endl;
+
+    // Note that there is no need to compress the matrix first:
+    // SparseMatrix::compress() is a no-op for a serial matrix, and the
+    // assembly has already eliminated the constrained rows and columns.
+    SparseDirectUMFPACK direct_solver;
+
+    Timer timer;
+    timer.start();
+    // The factorisation, fill-in included. All of the work is here.
+    direct_solver.initialize(system_matrix);
+    stats.t_pc_setup = timer.wall_time();
+
+    timer.restart();
+    // Two triangular solves. There is no iteration and no tolerance.
+    direct_solver.vmult(solution, system_rhs);
+    stats.t_solve = timer.wall_time();
+
+    stats.iterations = 1;
+
+    return stats;
   }
 
 
@@ -864,7 +1248,7 @@ namespace LaplaceBeltrami
    * ================================================================== */
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::compute_error() const
+  Errors LaplaceBeltramiProblem<dim, spacedim>::compute_error() const
   {
     const QGauss<dim> quadrature(2 * degree + 1);
 
@@ -886,10 +1270,15 @@ namespace LaplaceBeltrami
                                                norm);
     };
 
-    std::cout << "   H1 error = " << error_in_norm(VectorTools::H1_seminorm)
-              << ",  L2 error = " << error_in_norm(VectorTools::L2_norm)
-              << ",  Linfty = " << error_in_norm(VectorTools::Linfty_norm)
-              << std::endl;
+    Errors errors;
+    errors.h1   = error_in_norm(VectorTools::H1_seminorm);
+    errors.l2   = error_in_norm(VectorTools::L2_norm);
+    errors.linf = error_in_norm(VectorTools::Linfty_norm);
+
+    std::cout << "   H1 error = " << errors.h1 << ",  L2 error = " << errors.l2
+              << ",  Linfty = " << errors.linf << std::endl;
+
+    return errors;
   }
 
 
@@ -945,6 +1334,12 @@ namespace LaplaceBeltrami
   void LaplaceBeltramiProblem<dim, spacedim>::output_results(
     const unsigned int cycle) const
   {
+    // In a benchmark run these files are pure overhead: the .coo dumps of a
+    // large hierarchy are hundreds of megabytes and would dominate the very
+    // timings the benchmark is measuring.
+    if (!write_output_files)
+      return;
+
     const std::string cycle_str = std::to_string(cycle);
 
     // -- 1. the solution field, for visualisation --------------------
@@ -1003,7 +1398,156 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 12. Driver
+   * 12. Measurement
+   *
+   * Two independent memory numbers, because they answer different
+   * questions and a benchmark that reports only one of them can be
+   * misleading:
+   *
+   *  - algebraic_mb counts the deal.II objects we hold ourselves. It is
+   *    the number that shows how multigrid's O(N) storage is built up out
+   *    of the level operators, and it is reproducible.
+   *
+   *  - peak_rss_mb is the process high-water mark. It is always >= the
+   *    algebraic count, and the gap between the two is memory allocated
+   *    inside a library. That gap is the whole story for a direct solver,
+   *    whose fill-in and internal index arrays never appear as a deal.II
+   *    object.
+   *
+   * ================================================================== */
+
+  namespace
+  {
+    double
+    to_mb(const std::size_t bytes)
+    {
+      return static_cast<double>(bytes) / (1024.0 * 1024.0);
+    }
+
+
+    // Peak resident set size of the process in megabytes. It is a high
+    // water mark, so it never decreases: in a run that sweeps increasing
+    // cycle sizes the value reported for a cycle is the peak up to and
+    // including that cycle. As the problems grow monotonically that is the
+    // peak for that cycle.
+    double
+    peak_rss_mb()
+    {
+      Utilities::System::MemoryStats stats;
+      Utilities::System::get_memory_stats(stats);
+
+      return static_cast<double>(stats.VmHWM) / 1024.0;
+    }
+
+
+    // Resident memory right now, as opposed to the high water mark.
+    double
+    current_rss_mb()
+    {
+      Utilities::System::MemoryStats stats;
+      Utilities::System::get_memory_stats(stats);
+
+      return static_cast<double>(stats.VmRSS) / 1024.0;
+    }
+  } // namespace
+
+
+  template <int dim, int spacedim>
+  double LaplaceBeltramiProblem<dim, spacedim>::algebraic_memory_mb() const
+  {
+    std::size_t bytes = 0;
+
+    bytes += triangulation.memory_consumption();
+    bytes += dof_handler.memory_consumption();
+    bytes += sparsity_pattern.memory_consumption();
+    bytes += system_matrix.memory_consumption();
+    bytes += solution.memory_consumption();
+    bytes += system_rhs.memory_consumption();
+
+    // The level operators of the V-cycle, together with the sparsity
+    // patterns they are built on. A SparseMatrix does not own its pattern,
+    // so the two counts do not overlap.
+    if (level_operators_built)
+      for (unsigned int level = mg_matrices.min_level();
+           level <= mg_matrices.max_level();
+           ++level)
+        {
+          bytes += mg_sparsity_patterns[level].memory_consumption();
+          bytes += mg_matrices[level].memory_consumption();
+          bytes += mg_interface_sparsity_patterns[level].memory_consumption();
+          bytes += mg_interface_matrices[level].memory_consumption();
+        }
+
+    return to_mb(bytes);
+  }
+
+
+  namespace
+  {
+    double
+    total_seconds(const SolveStats &s)
+    {
+      return s.t_setup + s.t_assemble + s.t_pc_setup + s.t_solve + s.t_error +
+             s.t_output;
+    }
+
+
+    void
+    print_stats(const SolveStats &s)
+    {
+      std::cout << "   iterations = " << s.iterations
+                << (s.converged ? "" : "  (DID NOT CONVERGE)")
+                << ",  reduction per step = " << s.rate
+                << ",  residual = " << s.residual << std::endl
+                << "   memory: " << s.algebraic_mb << " MB algebraic, "
+                << s.rss_growth_mb << " MB above baseline, " << s.peak_rss_mb
+                << " MB peak RSS" << std::endl
+                << "   time: setup " << s.t_setup << " s, assemble "
+                << s.t_assemble << " s, preconditioner " << s.t_pc_setup
+                << " s, solve " << s.t_solve << " s, total "
+                << total_seconds(s) << " s" << std::endl;
+    }
+
+
+    // One row per cycle. Appended rather than rewritten, so that a sweep
+    // over several methods and degrees collects into a single file.
+    void
+    append_csv(const std::string            &path,
+               const unsigned int            degree,
+               const std::vector<SolveStats> &rows)
+    {
+      if (path.empty())
+        return;
+
+      const bool fresh = !std::ifstream(path).good();
+
+      std::ofstream out(path, std::ios::app);
+      AssertThrow(out, ExcMessage("Could not open " + path));
+
+      if (fresh)
+        out << "method,degree,cycle,dofs,cells,levels,converged,iterations,"
+               "rate,residual,t_setup,t_assemble,t_pc_setup,t_solve,t_total,"
+               "algebraic_mb,rss_growth_mb,peak_rss_mb,"
+               "h1_error,l2_error,linf_error\n";
+
+      out << std::setprecision(10);
+
+      for (const SolveStats &s : rows)
+        out << s.method << ',' << degree << ',' << s.cycle << ',' << s.dofs
+            << ',' << s.cells << ',' << s.levels << ','
+            << (s.converged ? "yes" : "no") << ',' << s.iterations << ','
+            << s.rate << ',' << s.residual << ',' << s.t_setup << ','
+            << s.t_assemble << ',' << s.t_pc_setup << ',' << s.t_solve << ','
+            << total_seconds(s) << ',' << s.algebraic_mb << ','
+            << s.rss_growth_mb << ',' << s.peak_rss_mb << ',' << s.errors.h1
+            << ',' << s.errors.l2 << ',' << s.errors.linf << '\n';
+    }
+  } // namespace
+
+
+  /* ==================================================================
+   *
+   * 13. Driver
    *
    * ================================================================== */
 
@@ -1021,12 +1565,26 @@ namespace LaplaceBeltrami
                                TorusManifold<dim>(TorusGeometry::R,
                                                   TorusGeometry::r));
 
+    // The level hierarchy is only built for the two multigrid methods. A
+    // method is charged only for the machinery it actually uses, so that
+    // the comparison is against the same discretisation rather than against
+    // a common but pointless preparation step.
+    const bool uses_multigrid =
+      (method == Method::cg_mg || method == Method::mg_solver);
+
+    // What the process costs before any of the problem is built, so that
+    // the reported growth measures the problem rather than the runtime.
+    const double baseline_rss_mb = current_rss_mb();
+
+    std::vector<SolveStats> all_stats;
+
     for (unsigned int cycle = 0; cycle < n_refinement_cycles; ++cycle)
       {
         std::cout << std::endl
                   << "================================================"
                   << std::endl
-                  << "Cycle " << cycle << std::endl
+                  << "Cycle " << cycle << "  (" << method_name(method) << ")"
+                  << std::endl
                   << "================================================"
                   << std::endl;
 
@@ -1041,14 +1599,43 @@ namespace LaplaceBeltrami
                   << "   Levels: " << triangulation.n_levels() << std::endl;
 
 
-        setup_system();        // DoFs, constraints, sparsity patterns
-        assemble_system();     // the active system A u = f
-        assemble_multigrid();  // the level operators of the V-cycle
+        Timer timer;
 
-        solve();
-        compute_error();
+        timer.start();
+        setup_system(); // DoFs, constraints, sparsity patterns
+        const double t_setup = timer.wall_time();
+
+        timer.restart();
+        assemble_system(); // the active system A u = f
+        if (uses_multigrid)
+          assemble_multigrid(); // the level operators of the V-cycle
+        const double t_assemble = timer.wall_time();
+
+        SolveStats stats = solve();
+
+        timer.restart();
+        stats.errors = compute_error();
+        stats.t_error = timer.wall_time();
+
+        timer.restart();
         output_results(cycle);
+        stats.t_output = timer.wall_time();
+
+        stats.cycle        = cycle;
+        stats.dofs         = dof_handler.n_dofs();
+        stats.cells        = triangulation.n_active_cells();
+        stats.levels       = triangulation.n_levels();
+        stats.t_setup      = t_setup;
+        stats.t_assemble   = t_assemble;
+        stats.algebraic_mb  = algebraic_memory_mb();
+        stats.peak_rss_mb   = peak_rss_mb();
+        stats.rss_growth_mb = stats.peak_rss_mb - baseline_rss_mb;
+
+        print_stats(stats);
+        all_stats.push_back(stats);
       }
+
+    append_csv(csv_path, degree, all_stats);
   }
 
 } // namespace LaplaceBeltrami
@@ -1066,19 +1653,61 @@ int main(int argc, char *argv[])
     {
       using namespace LaplaceBeltrami;
 
-      if (argc != 3)
+      //   ./solver <degree> <n_refinement_cycles> [method] [options]
+      //
+      // The first two arguments and the default method are unchanged, so
+      // that existing invocations keep working.
+      Method      method            = Method::cg_mg;
+      bool        write_output_files = true;
+      std::string csv_path;
+
+      std::vector<std::string> positional;
+
+      for (int i = 1; i < argc; ++i)
         {
-          std::cerr << "Usage: ./solver <degree> <n_refinement_cycles>"
-                    << std::endl;
+          const std::string arg = argv[i];
+
+          if (arg == "--no-dump")
+            write_output_files = false;
+          else if (arg.rfind("--csv=", 0) == 0)
+            csv_path = arg.substr(6);
+          else if (!arg.empty() && arg[0] == '-')
+            {
+              std::cerr << "Unknown option '" << arg << "'" << std::endl;
+              return 1;
+            }
+          else
+            positional.push_back(arg);
+        }
+
+      if (positional.size() < 2 || positional.size() > 3)
+        {
+          std::cerr
+            << "Usage: ./solver <degree> <n_refinement_cycles> [method]\n"
+            << "                [--no-dump] [--csv=FILE]\n"
+            << "\n"
+            << "  method: jacobi | ssor | mg | mg-solver | direct\n"
+            << "          (default mg, i.e. CG preconditioned by multigrid)\n"
+            << "\n"
+            << "  --no-dump    skip the .vtk/.coo/.txt dumps, which are\n"
+            << "               large and would dominate the timings\n"
+            << "  --csv=FILE   append one row per cycle to FILE\n"
+            << std::endl;
           return 1;
         }
 
-      const unsigned int degree = std::stoi(argv[1]);
+      const unsigned int degree = std::stoi(positional[0]);
 
-      const unsigned int n_refinement_cycles = std::stoi(argv[2]);
+      const unsigned int n_refinement_cycles = std::stoi(positional[1]);
+
+      if (positional.size() == 3)
+        method = parse_method(positional[2]);
 
       LaplaceBeltramiProblem<2, 3> laplace_beltrami(degree,
-                                                    n_refinement_cycles);
+                                                    n_refinement_cycles,
+                                                    method,
+                                                    write_output_files,
+                                                    csv_path);
 
       laplace_beltrami.run();
     }

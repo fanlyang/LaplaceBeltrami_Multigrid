@@ -75,19 +75,25 @@ reference cell. Refinement is uniform, which keeps the mesh hierarchy simple.
 
 ---
 
-## 3. The multigrid preconditioner
+## 3. The method used to solve the linear system
 
-The outer iteration is `SolverCG` with a relative tolerance of $10^{-10}$ and a
-limit of 1000 iterations. Three preconditioners are implemented; the active one
-is chosen by a **compile-time constant** near the top of `src/main.cpp`:
+Which solver is used is chosen **at run time** on the command line, so that
+the alternatives can be compared without recompiling:
 
-```cpp
-enum class CgPreconditioner { jacobi, ssor, multigrid };
+| `method` | What it does |
+| --- | --- |
+| `jacobi` | CG preconditioned by Jacobi |
+| `ssor` | CG preconditioned by SSOR |
+| `mg` | CG preconditioned by one geometric multigrid V-cycle — the default |
+| `mg-solver` | the V-cycle used as the solver itself, by defect correction |
+| `direct` | sparse direct factorisation (UMFPACK) |
 
-constexpr CgPreconditioner cg_preconditioner = CgPreconditioner::multigrid;
-```
-
-Changing that one line switches between Jacobi, SSOR and geometric multigrid.
+The iterative methods all stop at a relative residual of $10^{-10}$, with a
+limit of 1000 steps. `jacobi`, `ssor` and `mg` are CG runs that differ only in
+their preconditioner; `mg-solver` iterates the V-cycle on the defect with no
+Krylov acceleration, so what it measures is the convergence rate of multigrid
+itself; `direct` does not iterate at all. See
+[§7](#7-comparing-the-solvers) for what the comparison shows.
 
 The multigrid preconditioner is a V-cycle built on the same finite element
 space, restricted to each level:
@@ -181,7 +187,7 @@ care of include paths, compiler flags and the libraries to link.
 ## 5. Running
 
 ```bash
-./build/solver <degree> <n_refinement_cycles>
+./build/solver <degree> <n_refinement_cycles> [method] [--no-dump] [--csv=FILE]
 ```
 
 For example
@@ -190,10 +196,29 @@ For example
 ./build/solver 3 5
 ```
 
-runs a cubic ($Q_3$) discretisation through 5 uniform refinement cycles, printing
-for each cycle: the mesh sizes, the number of degrees of freedom, the number of
-CG iterations, and the $H^1$, $L^2$ and $L^\infty$ errors against the exact
+runs a cubic ($Q_3$) discretisation through 5 uniform refinement cycles with the
+default solver (CG preconditioned by multigrid), printing for each cycle: the
+mesh sizes, the number of degrees of freedom, the iteration count, the measured
+convergence rate and residual, the time spent in each phase, and the memory
+used. It also prints the $H^1$, $L^2$ and $L^\infty$ errors against the exact
 solution.
+
+Choosing a different solver is a third argument:
+
+```bash
+./build/solver 3 5 mg-solver    # iterate the V-cycle on its own
+./build/solver 3 5 direct       # UMFPACK
+```
+
+Two options control the output:
+
+- `--no-dump` skips the `.vtk` and `.coo` files described in [§6](#6-output-files).
+  These are large — the `.coo` dump of a deep hierarchy runs to hundreds of
+  megabytes — and writing them would dominate the very timings a benchmark run
+  is trying to measure.
+- `--csv=FILE` appends one row per cycle to `FILE`, with the timings, the
+  memory and the errors. Rows are appended rather than rewritten, so a whole
+  sweep collects into a single file.
 
 All output files are written into the **current working directory**, so run the
 program from a scratch directory if you want to keep them separate.
@@ -202,7 +227,8 @@ program from a scratch directory if you want to keep them separate.
 
 ## 6. Output files
 
-For a run with `n_refinement_cycles = N`, each cycle `c = 0 … N-1` produces:
+Unless `--no-dump` is given, a run with `n_refinement_cycles = N` produces the
+following for each cycle `c = 0 … N-1`:
 
 | File | Contents |
 | --- | --- |
@@ -244,7 +270,125 @@ right-hand side is the restricted residual, not an independently assembled $f_l$
 
 ---
 
-## 7. Results
+## 7. Comparing the solvers
+
+The five methods of [§3](#3-the-method-used-to-solve-the-linear-system) are not
+five ways of doing the same thing — they are the standard alternatives for a
+symmetric positive definite system, and running them against each other is what
+shows why multigrid is worth its complexity.
+
+```bash
+docker build -t laplace-beltrami-bench .
+./bench/run_sweep.sh 3 7          # cubic elements, cycles 0..6
+./bench/analyse.py bench/results-d3.csv
+./bench/plot.py bench/results-d3.csv
+```
+
+### 7.1 At 147,456 unknowns
+
+One row per method at the largest problem in the sweep (cubic elements, six
+refinement cycles, 16,384 cells). *Linear algebra* is the preconditioner or
+factorisation plus its application, and deliberately excludes assembly: that is
+the same $\mathcal{O}(N)$ work for every method and would only dilute the
+comparison.
+
+| Method | Iterations | Linear algebra | Total | Memory (objects) | Memory (process) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CG + Jacobi | 673 | 36.9 s | 68.8 s | 50.9 MB | 137.9 MB |
+| CG + SSOR | 508 | 95.2 s | 129.9 s | 50.9 MB | 134.6 MB |
+| MG standalone | 31 | 29.2 s | 79.4 s | 110.9 MB | 219.9 MB |
+| **CG + MG** | **15** | **14.6 s** | **64.3 s** | 110.9 MB | 226.1 MB |
+| Direct (UMFPACK) | 1 | 81.6 s | 117.3 s | 50.9 MB | 830.7 MB |
+
+Every iterative method stops at a relative residual of $10^{-10}$; the direct
+one reaches $8.6 \times 10^{-13}$, because it does not iterate at all. All five
+agree on the discretisation error to every digit printed.
+
+### 7.2 The scaling is the argument
+
+One problem size proves little: a direct solver has a small constant and wins at
+small $N$. What matters is how each method responds to refinement. Fitting
+$\log y = a + b \log N$ over the largest half of the points, where the
+asymptotics have taken over:
+
+| Method | Iterations | Linear algebra | Total time | Process memory |
+| --- | ---: | ---: | ---: | ---: |
+| CG + Jacobi | $N^{0.50}$ | $N^{1.27}$ | $N^{1.11}$ | $N^{0.56}$ |
+| CG + SSOR | $N^{0.48}$ | $N^{1.42}$ | $N^{1.27}$ | $N^{0.49}$ |
+| MG standalone | $N^{0.01}$ | $N^{0.90}$ | $N^{0.96}$ | $N^{0.64}$ |
+| **CG + MG** | $N^{0.02}$ | $N^{0.83}$ | $N^{0.93}$ | $N^{0.64}$ |
+| Direct (UMFPACK) | $N^{0.00}$ | $N^{1.36}$ | $N^{1.21}$ | $N^{0.89}$ |
+
+**Only multigrid has a mesh-independent iteration count.** Jacobi needs 15
+iterations at 144 unknowns and 673 at 147,456 — the count doubles with every
+refinement, $N^{0.50}$, which is the classical $\mathcal{O}(h^{-1})$ growth of an
+unpreconditioned Krylov method. Multigrid's count moves from 12 to 15 across the
+same range, $N^{0.02}$: it is not that multigrid's iterations are cheaper, it is
+that there are always about the same number of them. That single property is why
+the method is popular.
+
+**The consequence shows up in the time exponent.** Because Jacobi's iteration
+count grows while each iteration costs $\mathcal{O}(N)$, its linear algebra
+grows like $N^{1.27}$; SSOR is worse still at $N^{1.42}$. Multigrid grows like
+$N^{0.83}$. At 147,456 unknowns this is already the difference between 14.6 s and
+95.2 s, and the gap widens without bound — the exponents, not the constants, are
+what a coarser or finer mesh will change.
+
+**Memory is where the direct solver loses, and it is not visible in the matrix.**
+Column 5 counts the matrices, vectors and DoF structures the solver holds, and
+there the direct solver looks *economical*: 50.9 MB, the active matrix and
+nothing else, exactly what Jacobi and SSOR hold. Column 6 measures the process
+instead, and the same method needs **830.7 MB** — 16 times the matrix it was
+handed. That gap is the fill-in and its internal index arrays, allocated inside
+UMFPACK where no amount of algebraic bookkeeping can see it, and it grows like
+$N^{0.89}$ against multigrid's $N^{0.64}$. Under a 3-D or higher-order
+discretisation the same effect is far more severe, and it is the reason direct
+solvers stop being an option well before they stop being fast enough.
+
+Multigrid does use more memory than the simple preconditioners — 110.9 MB
+against 50.9 MB, because it stores an operator for every level — and that is an
+honest cost of the method, visible in the third panel of
+[`bench/scaling.pdf`](bench/scaling.pdf). It is a bounded factor, roughly
+$4/3$ of the fine-grid matrix in two dimensions, not a growth rate.
+
+### 7.3 Multigrid as a solver versus multigrid as a preconditioner
+
+It is worth comparing these two, and they must be compared on the *same*
+V-cycle — which is how they are implemented here, both going through the same
+`prepare_multigrid()`. The comparison isolates one thing: what Krylov
+acceleration buys.
+
+| Method | V-cycles at $N = 147{,}456$ | Linear algebra |
+| --- | ---: | ---: |
+| MG standalone (defect correction) | 31 | 29.2 s |
+| CG + MG | 15 | 14.6 s |
+
+Both are mesh-independent — $N^{0.01}$ and $N^{0.02}$ — so **standalone
+multigrid already delivers the property that makes multigrid famous**; it does
+not need CG to become an optimal method. What CG adds is a factor of about two:
+it needs 15 applications of the V-cycle where plain defect correction needs 31.
+That is the expected result and worth stating plainly, because defect correction
+applies a fixed-point iteration, converging at the rate $\rho$ of the V-cycle,
+while CG minimises over a growing Krylov subspace and converges at a rate
+governed by $\sqrt{\kappa}$ instead. CG also buys robustness: it guarantees
+monotone decrease of the energy-norm error, which a bare V-cycle iteration does
+not, and it degrades gracefully if the smoother or coarse solve is imperfect.
+
+So the honest summary is that CG + MG is roughly twice as fast as MG alone, not
+asymptotically better. If a study reports only one of the two, this is the
+relationship that is being left out.
+
+### 7.4 A caveat on the timings
+
+These timings were taken inside an `arm64` image emulated on an `x86_64` host
+(see [§4](#4-building)), which inflates every wall-clock number and does not
+inflate all instruction mixes equally. **The iteration counts, the residuals,
+the discretisation errors and the memory in bytes are architecture-independent
+and exact.** The time exponents are ratios and largely survive the distortion,
+but the absolute seconds should not be quoted; rebuild natively, or run on an
+`arm64` host, for numbers fit for publication.
+
+## 8. Results
 
 The table below is the output of a cubic ($Q_3$) discretisation over four
 refinement cycles,
@@ -290,7 +434,7 @@ terminates in one step.)
 
 ---
 
-## 8. Code layout
+## 9. Code layout
 
 Everything lives in `src/main.cpp`, in namespace `LaplaceBeltrami`, and is
 organised in numbered sections:
@@ -301,18 +445,23 @@ organised in numbered sections:
 3. **Right-hand side** — `RightHandSide<3>`, the analytic $f$.
 4. **Scratch and copy data** — `ScratchData` and `CopyData` for the mesh loop.
 5. **The problem class** — `LaplaceBeltramiProblem<dim, spacedim>`, plus the
-   preconditioner selector.
+   solver selector (`Method`) and the structures the measurements are
+   reported in (`SolveStats`, `Errors`).
 6. **DoFs and matrix structures** — `setup_system()`.
 7. **Cell worker** — the local integrals, shared by the active and level assembly.
 8. **Assembly** — `assemble_system()` and `assemble_multigrid()`.
-9. **Solution** — `solve()` and the three preconditioned CG variants.
+9. **Solution** — `solve()` and one function per method: `solve_cg_jacobi`,
+   `solve_cg_ssor`, `solve_cg_mg`, `solve_mg_standalone` and `solve_direct`,
+   with `prepare_multigrid()` building the V-cycle they share.
 10. **Error** — `compute_error()`.
 11. **Output** — `output_results()`, including the matrix and vector dumps.
-12. **Driver** — `run()`, and `main()` at the bottom.
+12. **Measurement** — `algebraic_memory_mb()`, the peak-RSS reading, and the
+    CSV writer.
+13. **Driver** — `run()`, and `main()` at the bottom.
 
 ---
 
-## 9. Reference
+## 10. Reference
 
 The surface finite element method and the surrounding deal.II machinery are
 described in:
@@ -322,7 +471,7 @@ described in:
 
 ---
 
-## 10. License
+## 11. License
 
 `src/main.cpp` carries the SPDX identifier `LGPL-2.1-or-later`, inherited from
 deal.II (which is licensed under the same terms) and from step-38, of which this
