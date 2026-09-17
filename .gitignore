@@ -31,3 +31,11 @@ solver.exe
 .idea/
 DerivedData/
 xcuserdata/
+
+# LaTeX build artifacts (the compiled preview PDF is kept on purpose)
+latex/*.aux
+latex/*.log
+latex/*.fls
+latex/*.fdb_latexmk
+latex/*.out
+latex/*.synctex.gz

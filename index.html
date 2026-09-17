@@ -1,0 +1,188 @@
+<title>Multigrid Evidence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400..700&display=swap">
+
+<style>
+  :root{
+    --ground:#f6f7f8; --surface:#ffffff; --surface-2:#eef1f3;
+    --ink:#14171a; --ink-2:#4a5157; --muted:#7c858c;
+    --rule:#dfe3e6; --rule-strong:#c3cbd1;
+    --accent:#1c5cab; --accent-soft:#e8eff9;
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;
+    --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#101315; --surface:#191d20; --surface-2:#22282c;
+      --ink:#f1f4f5; --ink-2:#b7c0c6; --muted:#8b949a;
+      --rule:#2b3237; --rule-strong:#3d464c;
+      --accent:#7fb0ee; --accent-soft:#1a2733;
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#101315; --surface:#191d20; --surface-2:#22282c;
+    --ink:#f1f4f5; --ink-2:#b7c0c6; --muted:#8b949a;
+    --rule:#2b3237; --rule-strong:#3d464c;
+    --accent:#7fb0ee; --accent-soft:#1a2733;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+  }
+
+  body{
+    background:var(--ground); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    max-width:860px; margin:0 auto;
+    padding-block:44px 72px; padding-inline:20px;
+    display:flex; flex-direction:column; gap:34px;
+  }
+  .eyebrow{
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  h1{
+    font-family:var(--serif); font-weight:600;
+    font-size:clamp(2rem,5.2vw,2.8rem); line-height:1.1;
+    letter-spacing:-.015em; text-wrap:balance; margin:0;
+  }
+  .standfirst{
+    font-family:var(--serif); font-size:clamp(1.04rem,2.2vw,1.16rem);
+    line-height:1.55; color:var(--ink-2); max-width:62ch; margin:0;
+  }
+  header{display:flex;flex-direction:column;gap:13px;}
+
+  h2{
+    font-family:var(--mono); font-size:11.5px; font-weight:500;
+    letter-spacing:.13em; text-transform:uppercase; color:var(--muted);
+    margin:0; padding-top:12px; border-top:1px solid var(--rule);
+  }
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;}
+  .card{
+    background:var(--surface); border:1px solid var(--rule); border-radius:5px;
+    padding:20px 20px 18px; display:flex; flex-direction:column; gap:10px;
+  }
+  .card .tag{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--accent);
+  }
+  .card h3{
+    font-family:var(--serif); font-weight:600; font-size:1.2rem;
+    line-height:1.25; margin:0; letter-spacing:-.01em;
+  }
+  .card p{margin:0;font-size:.9rem;color:var(--ink-2);line-height:1.55;}
+  .card .links{
+    display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:auto;
+    padding-top:12px; font-size:.86rem;
+  }
+  .card .links a{
+    color:var(--accent); text-decoration:none;
+    border-bottom:1px solid var(--accent-soft); padding-bottom:1px;
+  }
+  .card .links a:hover{border-bottom-color:var(--accent);}
+  .card .links a::after{content:" \2192"; font-size:.85em;}
+
+  .files{display:flex;flex-direction:column;gap:0;border:1px solid var(--rule);border-radius:5px;background:var(--surface);overflow:hidden;}
+  .file{
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+    padding:11px 18px; border-bottom:1px solid var(--rule);
+    font-size:.86rem; text-decoration:none; color:inherit;
+  }
+  .file:last-child{border-bottom:none;}
+  .file:hover{background:var(--surface-2);}
+  .file .n{font-family:var(--mono);color:var(--accent);min-width:210px;}
+  .file .d{color:var(--ink-2);flex:1;min-width:180px;}
+
+  .note{
+    background:var(--surface); border:1px solid var(--rule);
+    border-left:3px solid var(--s4); border-radius:4px;
+    padding:14px 18px; display:flex; flex-direction:column; gap:6px;
+  }
+  .note .t{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .note p{margin:0;font-size:.88rem;line-height:1.55;max-width:68ch;}
+  code{font-family:var(--mono);font-size:.87em;background:var(--surface-2);padding:.12em .38em;border-radius:3px;}
+
+  .head{display:flex;flex-direction:column;gap:6px;}
+  .k{font-family:var(--mono);font-size:.8rem;color:var(--muted);}
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Laplace&ndash;Beltrami on a torus &middot; deal.II &middot; cubic elements</div>
+    <h1>Multigrid Evidence</h1>
+    <p class="standfirst">
+      Two documents on one question: is geometric multigrid's advantage a
+      favourable constant, or a different asymptotic behaviour under mesh
+      refinement? Five solvers, one discretisation, from 144 to 589,824
+      unknowns. Both documents draw on the same 35 measured rows.
+    </p>
+  </header>
+
+  <div class="cards">
+
+    <div class="card">
+      <div class="tag">Read &middot; interactive</div>
+      <h3>The comparison</h3>
+      <p>
+        The full argument with charts you can hover: what was measured, the
+        results at the largest size, the scaling exponents, and the answer to
+        whether multigrid should be used alone or as a preconditioner.
+      </p>
+      <div class="links">
+        <a href="/comparison">Open the comparison</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="tag">Thesis &middot; LaTeX</div>
+      <h3>The section</h3>
+      <p>
+        The same results as a drop-in LaTeX section with three publication
+        tables and the figure. Compiles clean &mdash; no undefined references, no
+        overfull boxes &mdash; and needs only <code>booktabs</code> and
+        <code>graphicx</code>.
+      </p>
+      <div class="links">
+        <a href="/thesis-section.pdf">Compiled preview</a>
+        <a href="/thesis-section.tex">Source</a>
+      </div>
+    </div>
+
+  </div>
+
+  <h2>The evidence</h2>
+  <div class="files">
+    <a class="file" href="/results.csv">
+      <span class="n">results-d3.csv</span>
+      <span class="d">35 rows &mdash; every method at every size, behind every number in both documents</span>
+    </a>
+    <a class="file" href="/figure.pdf">
+      <span class="n">scaling.pdf</span>
+      <span class="d">the four-panel figure, vector, embedded by the LaTeX section</span>
+    </a>
+    <a class="file" href="/figure.png">
+      <span class="n">scaling.png</span>
+      <span class="d">the same figure, raster, for slides</span>
+    </a>
+  </div>
+
+  <div class="note">
+    <div class="t">One caveat, carried by both documents</div>
+    <p>
+      The timings come from an <code>arm64</code> container emulated on an
+      <code>x86_64</code> host. Iteration counts, residuals, discretisation
+      errors and byte-level memory are exact; the wall-clock seconds are not,
+      and are marked as such wherever they appear.
+    </p>
+  </div>
+
+</div>

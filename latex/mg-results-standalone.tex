@@ -1,0 +1,32 @@
+% Standalone wrapper around mg-results.tex, used to compile-check the section
+% on its own. The thesis should \input{mg-results} into its own document
+% instead; this file exists only so the section can be built and proof-read
+% without the rest of the thesis.
+%
+%   latexmk -pdf mg-results-standalone.tex
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[hidelinks]{hyperref}
+
+% scaling.pdf lives beside the benchmark results, one directory up.
+\graphicspath{{../bench/}{./}}
+
+\begin{document}
+
+% The section cross-references the multigrid chapter of the thesis, which does
+% not exist in this wrapper. \refstepcounter advances the counter and sets the
+% current label -- so the cross-reference resolves to a real number -- without
+% printing anything.
+\refstepcounter{section}
+\label{sec:multigrid}
+
+\input{mg-results}
+
+\end{document}
