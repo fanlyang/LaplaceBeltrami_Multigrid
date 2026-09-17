@@ -1,0 +1,10 @@
+build/
+.git/
+.gitignore
+*.orig
+*.vtk
+*.vtu
+*.coo
+solution-*.txt
+rhs-*.txt
+mg-level-info-*.txt

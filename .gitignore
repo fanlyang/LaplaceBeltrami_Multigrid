@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# CMake / C++
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+solver
+solver.exe
+
+# deal.II output
+*.vtk
+*.vtu
+*.pvtu
+
+# Solver output: matrices, vectors and level statistics
+*.coo
+
+# Local backups
+*.orig
+
+# Editor / IDE
+.vscode/
+.idea/
+DerivedData/
+xcuserdata/

@@ -1,0 +1,3 @@
+# Store files with LF line endings in the repository and check them out
+# unchanged on every platform, so a clone builds the same everywhere.
+* text=auto eol=lf
