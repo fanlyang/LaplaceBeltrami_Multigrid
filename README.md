@@ -284,72 +284,97 @@ docker build -t laplace-beltrami-bench .
 ./bench/plot.py bench/results-d3.csv
 ```
 
-### 7.1 At 147,456 unknowns
+### 7.1 At 589,824 unknowns
 
-One row per method at the largest problem in the sweep (cubic elements, six
-refinement cycles, 16,384 cells). *Linear algebra* is the preconditioner or
+One row per method at the largest problem in the sweep (cubic elements, seven
+refinement cycles, 65,536 cells). *Linear algebra* is the preconditioner or
 factorisation plus its application, and deliberately excludes assembly: that is
 the same $\mathcal{O}(N)$ work for every method and would only dilute the
 comparison.
 
 | Method | Iterations | Linear algebra | Total | Memory (objects) | Memory (process) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| CG + Jacobi | 673 | 36.9 s | 68.8 s | 50.9 MB | 137.9 MB |
-| CG + SSOR | 508 | 95.2 s | 129.9 s | 50.9 MB | 134.6 MB |
-| MG standalone | 31 | 29.2 s | 79.4 s | 110.9 MB | 219.9 MB |
-| **CG + MG** | **15** | **14.6 s** | **64.3 s** | 110.9 MB | 226.1 MB |
-| Direct (UMFPACK) | 1 | 81.6 s | 117.3 s | 50.9 MB | 830.7 MB |
+| CG + Jacobi | 1000 — **did not converge** | 179.1 s | 309.2 s | 203.5 MB | 430.5 MB |
+| CG + SSOR | 957 | 692.6 s | 835.6 s | 203.5 MB | 451.7 MB |
+| MG standalone | 31 | 114.3 s | 335.6 s | 443.5 MB | 833.0 MB |
+| **CG + MG** | **15** | **62.1 s** | **329.7 s** | 443.5 MB | 793.1 MB |
+| Direct (UMFPACK) | 1 | 652.0 s | 800.4 s | 203.5 MB | **3347.3 MB** |
 
-Every iterative method stops at a relative residual of $10^{-10}$; the direct
-one reaches $8.6 \times 10^{-13}$, because it does not iterate at all. All five
-agree on the discretisation error to every digit printed.
+Three things are worth stating plainly.
+
+**Jacobi does not solve this problem at all.** It exhausts its budget of 1000
+iterations with the relative residual still at $9.7 \times 10^{-8}$, three
+orders of magnitude short of the $10^{-10}$ every other method reaches. Its
+$H^1$ error ($2.570 \times 10^{-7}$) is consequently *worse* than the other
+four, which agree with each other to every digit printed
+($2.549 \times 10^{-7}$) — the first point in the sweep where the methods no
+longer produce the same answer, and the reason the benchmark records
+non-convergence instead of treating it as a crash. Jacobi's run also *looks*
+cheap in the table (309 s) precisely because it stopped early without solving
+anything.
+
+**The direct solver needs 3.3 GB to factor a 204 MB matrix.** That is a factor
+of 16.4, and it is the single most important number here.
+
+**Multigrid is now the fastest method as well as the cheapest in memory**, and
+it is the only one whose advantage is structural rather than a constant factor.
 
 ### 7.2 The scaling is the argument
 
 One problem size proves little: a direct solver has a small constant and wins at
 small $N$. What matters is how each method responds to refinement. Fitting
-$\log y = a + b \log N$ over the largest half of the points, where the
-asymptotics have taken over:
+$\log y = a + b \log N$ over the largest half of the *converged* points, where
+the asymptotics have taken over — Jacobi's capped run is a lower bound, not a
+measurement, and including it would understate the growth it failed to finish:
 
 | Method | Iterations | Linear algebra | Total time | Process memory |
 | --- | ---: | ---: | ---: | ---: |
-| CG + Jacobi | $N^{0.50}$ | $N^{1.27}$ | $N^{1.11}$ | $N^{0.56}$ |
-| CG + SSOR | $N^{0.48}$ | $N^{1.42}$ | $N^{1.27}$ | $N^{0.49}$ |
-| MG standalone | $N^{0.01}$ | $N^{0.90}$ | $N^{0.96}$ | $N^{0.64}$ |
-| **CG + MG** | $N^{0.02}$ | $N^{0.83}$ | $N^{0.93}$ | $N^{0.64}$ |
-| Direct (UMFPACK) | $N^{0.00}$ | $N^{1.36}$ | $N^{1.21}$ | $N^{0.89}$ |
+| CG + Jacobi | $N^{0.50}$ | $N^{1.26}$ | $N^{1.08}$ | $N^{0.51}$ |
+| CG + SSOR | $N^{0.47}$ | $N^{1.40}$ | $N^{1.28}$ | $N^{0.66}$ |
+| MG standalone | $N^{0.00}$ | $N^{0.89}$ | $N^{0.94}$ | $N^{0.74}$ |
+| **CG + MG** | $N^{0.02}$ | $N^{0.90}$ | $N^{0.99}$ | $N^{0.74}$ |
+| Direct (UMFPACK) | $N^{0.00}$ | $N^{1.40}$ | $N^{1.26}$ | $N^{0.93}$ |
 
 **Only multigrid has a mesh-independent iteration count.** Jacobi needs 15
 iterations at 144 unknowns and 673 at 147,456 — the count doubles with every
 refinement, $N^{0.50}$, which is the classical $\mathcal{O}(h^{-1})$ growth of an
-unpreconditioned Krylov method. Multigrid's count moves from 12 to 15 across the
-same range, $N^{0.02}$: it is not that multigrid's iterations are cheaper, it is
-that there are always about the same number of them. That single property is why
-the method is popular.
+unpreconditioned Krylov method, and by 589,824 unknowns it has stopped
+converging altogether. Multigrid's count moves from 12 to 15 across the entire
+range, $N^{0.02}$: it is not that multigrid's iterations are cheaper, it is that
+there are always about the same number of them. That single property is why the
+method is popular.
 
 **The consequence shows up in the time exponent.** Because Jacobi's iteration
 count grows while each iteration costs $\mathcal{O}(N)$, its linear algebra
-grows like $N^{1.27}$; SSOR is worse still at $N^{1.42}$. Multigrid grows like
-$N^{0.83}$. At 147,456 unknowns this is already the difference between 14.6 s and
-95.2 s, and the gap widens without bound — the exponents, not the constants, are
-what a coarser or finer mesh will change.
+grows like $N^{1.26}$; SSOR is worse still at $N^{1.40}$. Multigrid grows like
+$N^{0.90}$. At 589,824 unknowns that is the difference between 62 s and 693 s,
+and the gap widens without bound — the exponents, not the constants, are what a
+coarser or finer mesh will change.
 
-**Memory is where the direct solver loses, and it is not visible in the matrix.**
+**Memory is where the direct solver loses, and it is invisible in the matrix.**
 Column 5 counts the matrices, vectors and DoF structures the solver holds, and
-there the direct solver looks *economical*: 50.9 MB, the active matrix and
+there the direct solver looks *economical*: 203.5 MB, the active matrix and
 nothing else, exactly what Jacobi and SSOR hold. Column 6 measures the process
-instead, and the same method needs **830.7 MB** — 16 times the matrix it was
+instead, and the same method needs **3347.3 MB** — 16.4 times the matrix it was
 handed. That gap is the fill-in and its internal index arrays, allocated inside
 UMFPACK where no amount of algebraic bookkeeping can see it, and it grows like
-$N^{0.89}$ against multigrid's $N^{0.64}$. Under a 3-D or higher-order
-discretisation the same effect is far more severe, and it is the reason direct
-solvers stop being an option well before they stop being fast enough.
+$N^{0.93}$ against multigrid's $N^{0.74}$. The consequence is not academic one
+refinement level further on: 589,824 unknowns is *the largest problem this study
+could run at all*. Over the last refinement the direct solver's memory grew by a
+factor of 4.0 for a factor of 4 in unknowns, so the next level projects to well
+over 12 GB against the 8 GB available to Docker here. Multigrid's stored
+operators, which grow exactly like $N$, project to 1.8 GB for the same step.
+Under a 3-D or higher-order discretisation the direct solver's ceiling arrives
+several levels sooner, and that — not speed — is the reason it stops being an
+option.
 
-Multigrid does use more memory than the simple preconditioners — 110.9 MB
-against 50.9 MB, because it stores an operator for every level — and that is an
+Multigrid does use more memory than the simple preconditioners — 443.5 MB
+against 203.5 MB, because it stores an operator for every level — and that is an
 honest cost of the method, visible in the third panel of
 [`bench/scaling.pdf`](bench/scaling.pdf). It is a bounded factor, roughly
-$4/3$ of the fine-grid matrix in two dimensions, not a growth rate.
+$4/3$ of the fine-grid matrix in two dimensions, not a growth rate: the two
+multigrid rows sit on a line parallel to the other three, above them by a
+constant.
 
 ### 7.3 Multigrid as a solver versus multigrid as a preconditioner
 
@@ -358,15 +383,16 @@ V-cycle — which is how they are implemented here, both going through the same
 `prepare_multigrid()`. The comparison isolates one thing: what Krylov
 acceleration buys.
 
-| Method | V-cycles at $N = 147{,}456$ | Linear algebra |
+| Method | V-cycles at $N = 589{,}824$ | Linear algebra |
 | --- | ---: | ---: |
-| MG standalone (defect correction) | 31 | 29.2 s |
-| CG + MG | 15 | 14.6 s |
+| MG standalone (defect correction) | 31 | 114.3 s |
+| CG + MG | 15 | 62.1 s |
 
-Both are mesh-independent — $N^{0.01}$ and $N^{0.02}$ — so **standalone
+Both are mesh-independent — $N^{0.00}$ and $N^{0.02}$ — so **standalone
 multigrid already delivers the property that makes multigrid famous**; it does
 not need CG to become an optimal method. What CG adds is a factor of about two:
-it needs 15 applications of the V-cycle where plain defect correction needs 31.
+it needs 15 applications of the V-cycle where plain defect correction needs 31,
+and the ratio holds at every problem size in the sweep.
 That is the expected result and worth stating plainly, because defect correction
 applies a fixed-point iteration, converging at the rate $\rho$ of the V-cycle,
 while CG minimises over a growing Krylov subspace and converges at a rate

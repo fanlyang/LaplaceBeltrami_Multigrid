@@ -102,8 +102,12 @@ def main():
                 f"{fmt(r['residual'], 10)}"
             )
 
-        # Scaling on the last half of the points, where the asymptotics rule.
-        tail = rs[len(rs) // 2 :] if len(rs) >= 4 else rs
+        # Scaling on the largest half of the points, where the asymptotics
+        # rule. A run that hit its iteration budget is a lower bound rather
+        # than a measurement -- including it would *understate* the growth it
+        # failed to complete -- so those points are left out.
+        conv = [r for r in rs if r["converged"] == "yes"]
+        tail = conv[len(conv) // 2 :] if len(conv) >= 4 else conv
         pts = [(r["dofs"], r) for r in tail]
         b_la = slope([(n, r["t_la"]) for n, r in pts])
         b_time = slope([(n, r["t_total"]) for n, r in pts])
