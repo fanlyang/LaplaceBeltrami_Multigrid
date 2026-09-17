@@ -1,0 +1,912 @@
+<title>Five Solvers on a Torus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400..700&display=swap">
+
+<style>
+  /* ---- tokens: full light palette on bare :root ---- */
+  :root{
+    --ground:#f6f7f8;
+    --surface:#ffffff;
+    --surface-2:#eef1f3;
+    --ink:#14171a;
+    --ink-2:#4a5157;
+    --muted:#7c858c;
+    --rule:#dfe3e6;
+    --rule-strong:#c3cbd1;
+    --accent:#1c5cab;
+    --accent-soft:#e8eff9;
+    --warn:#a3441f;
+    --warn-soft:#fbeee7;
+
+    /* categorical series — the validated five-slot order */
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;
+    --grid:#e6eaed;
+
+    --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#101315;
+      --surface:#191d20;
+      --surface-2:#22282c;
+      --ink:#f1f4f5;
+      --ink-2:#b7c0c6;
+      --muted:#8b949a;
+      --rule:#2b3237;
+      --rule-strong:#3d464c;
+      --accent:#7fb0ee;
+      --accent-soft:#1a2733;
+      --warn:#f0a184;
+      --warn-soft:#2c1d16;
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+      --grid:#262c31;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#101315;
+    --surface:#191d20;
+    --surface-2:#22282c;
+    --ink:#f1f4f5;
+    --ink-2:#b7c0c6;
+    --muted:#8b949a;
+    --rule:#2b3237;
+    --rule-strong:#3d464c;
+    --accent:#7fb0ee;
+    --accent-soft:#1a2733;
+    --warn:#f0a184;
+    --warn-soft:#2c1d16;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    --grid:#262c31;
+  }
+
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:16px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .wrap{
+    max-width:860px;
+    margin:0 auto;
+    padding-block:40px 72px;
+    padding-inline:20px;
+    display:flex;
+    flex-direction:column;
+    gap:36px;
+  }
+
+  /* ---- masthead ---- */
+  .masthead{display:flex;flex-direction:column;gap:14px;}
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:11.5px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--muted);
+  }
+  h1{
+    font-family:var(--serif);
+    font-weight:600;
+    font-size:clamp(2rem,5.2vw,2.9rem);
+    line-height:1.1;
+    letter-spacing:-.015em;
+    text-wrap:balance;
+    margin:0;
+  }
+  .standfirst{
+    font-family:var(--serif);
+    font-size:clamp(1.05rem,2.3vw,1.19rem);
+    line-height:1.55;
+    color:var(--ink-2);
+    max-width:62ch;
+    margin:0;
+  }
+
+  /* ---- stat row ---- */
+  .stats{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    gap:1px;
+    background:var(--rule);
+    border:1px solid var(--rule);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .stat{
+    background:var(--surface);
+    padding:16px 18px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:3px;
+  }
+  .stat .v{
+    font-family:var(--mono);
+    font-size:1.6rem;
+    font-weight:500;
+    letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums;
+    line-height:1.15;
+    color:var(--accent);
+  }
+  .stat .k{font-size:.83rem;color:var(--ink-2);line-height:1.4;}
+
+  /* ---- sections ---- */
+  section{display:flex;flex-direction:column;gap:16px;}
+  h2{
+    font-family:var(--serif);
+    font-weight:600;
+    font-size:1.35rem;
+    line-height:1.25;
+    letter-spacing:-.01em;
+    text-wrap:balance;
+    margin:0;
+    padding-top:10px;
+    border-top:1px solid var(--rule);
+    display:flex;
+    gap:.6em;
+    align-items:baseline;
+  }
+  h2 .num{
+    font-family:var(--mono);
+    font-size:.78rem;
+    font-weight:500;
+    color:var(--muted);
+    letter-spacing:.05em;
+  }
+  h3{
+    font-family:var(--sans);
+    font-weight:600;
+    font-size:.95rem;
+    margin:0;
+    color:var(--ink);
+  }
+  p{margin:0;max-width:68ch;}
+  a{color:var(--accent);}
+  strong{font-weight:600;}
+  em{font-style:italic;}
+
+  code{
+    font-family:var(--mono);
+    font-size:.87em;
+    background:var(--surface-2);
+    padding:.12em .38em;
+    border-radius:3px;
+    color:var(--ink);
+  }
+
+  /* ---- callout ---- */
+  .callout{
+    background:var(--surface);
+    border:1px solid var(--rule);
+    border-left:3px solid var(--accent);
+    border-radius:3px;
+    padding:14px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .callout.warn{border-left-color:var(--warn);background:var(--warn-soft);}
+  .callout .t{
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:.13em;
+    text-transform:uppercase;
+    color:var(--muted);
+  }
+  .callout.warn .t{color:var(--warn);}
+
+  /* ---- tables ---- */
+  .tw{overflow-x:auto;border:1px solid var(--rule);border-radius:4px;background:var(--surface);}
+  table{border-collapse:collapse;width:100%;min-width:540px;font-size:.85rem;}
+  caption{
+    caption-side:top;
+    text-align:left;
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--muted);
+    padding:12px 16px 10px;
+  }
+  th,td{
+    padding:9px 13px;
+    text-align:right;
+    border-bottom:1px solid var(--rule);
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  th:first-child,td:first-child{text-align:left;font-family:var(--sans);}
+  thead th{
+    font-family:var(--mono);
+    font-size:11px;
+    font-weight:500;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--muted);
+    border-bottom:1px solid var(--rule-strong);
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  td.num{font-family:var(--mono);}
+  tr.hi td{background:var(--accent-soft);}
+  .swatch{
+    display:inline-block;
+    width:9px;height:9px;
+    border-radius:2px;
+    margin-right:8px;
+    vertical-align:baseline;
+  }
+  .fail{color:var(--warn);font-weight:500;}
+
+  /* ---- charts ---- */
+  figure{margin:0;display:flex;flex-direction:column;gap:10px;}
+  .legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px 18px;
+    font-size:.78rem;
+    color:var(--ink-2);
+    padding-bottom:2px;
+  }
+  .legend span{display:flex;align-items:center;gap:7px;}
+  .chartbox{
+    position:relative;
+    overflow-x:auto;
+    border:1px solid var(--rule);
+    border-radius:4px;
+    background:var(--surface);
+  }
+  .chartbox svg{display:block;min-width:560px;width:100%;height:auto;}
+  figcaption{
+    font-size:.83rem;
+    color:var(--ink-2);
+    max-width:68ch;
+    line-height:1.5;
+  }
+  .tip{
+    position:absolute;
+    pointer-events:none;
+    background:var(--surface);
+    border:1px solid var(--rule-strong);
+    border-radius:4px;
+    padding:9px 11px;
+    font-size:.78rem;
+    box-shadow:0 4px 14px rgba(0,0,0,.13);
+    min-width:172px;
+    z-index:5;
+  }
+  .tip .h{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--muted);
+    letter-spacing:.05em;
+    margin-bottom:5px;
+  }
+  .tip .r{display:flex;align-items:center;gap:7px;justify-content:space-between;}
+  .tip .r .l{display:flex;align-items:center;gap:6px;color:var(--ink-2);}
+  .tip .r .v{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);}
+
+  ul{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:8px;max-width:68ch;}
+  li::marker{color:var(--muted);}
+
+  .foot{
+    border-top:1px solid var(--rule);
+    padding-top:18px;
+    font-size:.83rem;
+    color:var(--muted);
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .foot p{max-width:70ch;}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Laplace&ndash;Beltrami on a torus &middot; deal.II &middot; cubic elements</div>
+    <h1>Five Solvers on a Torus</h1>
+    <p class="standfirst">
+      A geometric multigrid V-cycle, used two ways, against Jacobi, SSOR and a
+      sparse direct factorisation &mdash; on one discretisation of the surface
+      problem, from 144 unknowns to 589,824. The question is not which is
+      fastest here. It is which one still behaves the same way after refinement.
+    </p>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="v">N<sup>0.02</sup></div>
+      <div class="k">Growth of CG&nbsp;+&nbsp;MG's iteration count with problem size, against N<sup>0.50</sup> for Jacobi</div>
+    </div>
+    <div class="stat">
+      <div class="v">16.4&times;</div>
+      <div class="k">Memory the direct solver needs over the matrix it is handed &mdash; fill-in no algebraic accounting can see</div>
+    </div>
+    <div class="stat">
+      <div class="v">15 / 31</div>
+      <div class="k">V-cycles for CG&nbsp;+&nbsp;MG versus multigrid used alone, at every size measured</div>
+    </div>
+  </div>
+
+  <section>
+    <h2><span class="num">01</span> What was measured</h2>
+    <p>
+      Every method solves the <em>same</em> linear system: the same torus, the same
+      cubic finite elements, the same curved mapping. All five agree on the
+      discretisation error to every digit printed, so the comparison is of
+      solvers and nothing else. Each ran in its own container, and the multigrid
+      level hierarchy is built only for the methods that use it &mdash; nothing is
+      charged for machinery it does not touch.
+    </p>
+
+    <div class="tw">
+      <table>
+        <caption>The five methods</caption>
+        <thead>
+          <tr><th>Method</th><th>What it is</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>CG + Jacobi</td><td>conjugate gradients, diagonal preconditioner</td></tr>
+          <tr><td>CG + SSOR</td><td>conjugate gradients, symmetric SOR preconditioner</td></tr>
+          <tr><td>MG standalone</td><td>the V-cycle iterated on the defect, no Krylov acceleration</td></tr>
+          <tr><td>CG + MG</td><td>the same V-cycle as a preconditioner for CG</td></tr>
+          <tr><td>Direct</td><td>sparse LU factorisation (UMFPACK)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The two multigrid rows run through the same <code>prepare_multigrid()</code>
+      and the same V-cycle operator, so they differ in exactly one thing: whether
+      a Krylov space is doing the steering. Everything iterative stops at a
+      relative residual of 10<sup>&minus;10</sup>.
+    </p>
+
+    <div class="callout">
+      <div class="t">Two memory numbers, deliberately</div>
+      <p>
+        <strong>Objects</strong> counts the matrices, vectors and DoF structures the
+        solver itself holds. <strong>Process</strong> is the peak resident memory above a
+        measured baseline. The gap between them is memory allocated inside a
+        library &mdash; which is where a direct solver's fill-in lives, and where
+        the first number sees nothing at all.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">02</span> At 589,824 unknowns</h2>
+    <p>
+      The largest problem the study could run: 65,536 cells, cubic elements.
+      <em>Linear algebra</em> is the factorisation or preconditioner plus its
+      application, excluding assembly &mdash; that is the same
+      <span style="white-space:nowrap">O(N)</span> work for every method and would
+      only dilute the comparison.
+    </p>
+
+    <div class="tw">
+      <table>
+        <caption>One row per method, N = 589,824</caption>
+        <thead>
+          <tr>
+            <th>Method</th>
+            <th>Iterations</th>
+            <th>Linear algebra</th>
+            <th>Total</th>
+            <th>Memory (objects)</th>
+            <th>Memory (process)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="swatch" style="background:var(--s3)"></span>CG + Jacobi</td>
+            <td class="num fail">1000 &#10007;</td>
+            <td class="num">179.1 s</td><td class="num">309.2 s</td>
+            <td class="num">203.5 MB</td><td class="num">430.5 MB</td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s4)"></span>CG + SSOR</td>
+            <td class="num">957</td>
+            <td class="num">692.6 s</td><td class="num">835.6 s</td>
+            <td class="num">203.5 MB</td><td class="num">451.7 MB</td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s1)"></span>MG standalone</td>
+            <td class="num">31</td>
+            <td class="num">114.3 s</td><td class="num">335.6 s</td>
+            <td class="num">443.5 MB</td><td class="num">833.0 MB</td>
+          </tr>
+          <tr class="hi">
+            <td><span class="swatch" style="background:var(--s2)"></span><strong>CG + MG</strong></td>
+            <td class="num">15</td>
+            <td class="num">62.1 s</td><td class="num">329.7 s</td>
+            <td class="num">443.5 MB</td><td class="num">793.1 MB</td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s5)"></span>Direct (UMFPACK)</td>
+            <td class="num">1</td>
+            <td class="num">652.0 s</td><td class="num">800.4 s</td>
+            <td class="num">203.5 MB</td>
+            <td class="num" style="color:var(--warn);font-weight:500">3347.3 MB</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="font-size:.83rem;color:var(--muted)">
+      &#10007; CG + Jacobi exhausted its budget of 1000 iterations without
+      reaching tolerance, so its iteration count is a cap rather than a
+      measurement.
+    </p>
+
+    <h3>Jacobi does not solve this problem at all</h3>
+    <p>
+      It exhausts its budget of 1000 iterations with the relative residual still
+      at 9.7&times;10<sup>&minus;8</sup> &mdash; three orders of magnitude short of what
+      every other method reaches. Its H<sup>1</sup> error, 2.570&times;10<sup>&minus;7</sup>,
+      is consequently <em>worse</em> than the other four, which agree with each other
+      at 2.549&times;10<sup>&minus;7</sup>. It is the only point in the sweep where the
+      methods stop producing the same answer. Its row also <em>looks</em> cheap at
+      309 s, precisely because it stopped early without solving anything.
+    </p>
+
+    <h3>The direct solver needs 3.3 GB to factor a 204 MB matrix</h3>
+    <p>
+      A factor of 16.4. Its <em>object</em> memory is unremarkable &mdash; the same
+      203.5 MB Jacobi and SSOR hold, just the active matrix &mdash; but the process
+      tells a different story. That gap is fill-in and its internal index arrays,
+      allocated inside UMFPACK. The growth is not academic one level further on:
+      over the last refinement its memory rose by a factor of 4.0 for a factor of
+      4 in unknowns, so the next size projects past the 8 GB this machine had.
+      <strong>589,824 unknowns is not a stopping point by choice; it is the ceiling.</strong>
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="num">03</span> The scaling is the argument</h2>
+    <p>
+      One problem size proves little &mdash; a direct solver has a small constant and
+      wins when the problem is small. What matters is how each method responds to
+      refinement. Both charts are log&ndash;log; a straight line is a power law, and
+      its slope is the exponent. Hover or tap a chart to read every method at
+      that size.
+    </p>
+
+    <figure>
+      <div class="legend" id="legend-it"></div>
+      <div class="chartbox" id="box-it">
+        <svg id="chart-it" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" role="img"
+             aria-label="Iterations to reach tolerance against problem size, log-log, for five methods"></svg>
+        <div class="tip" id="tip-it" hidden></div>
+      </div>
+      <figcaption>
+        <strong>Iterations are flat only for multigrid.</strong> Jacobi doubles its
+        count with every refinement; SSOR climbs almost as fast. The two multigrid
+        curves are horizontal &mdash; not because their iterations are cheaper, but
+        because there are always about the same number of them. Jacobi's final
+        marker is hollow: it hit the 1000-iteration cap without converging.
+      </figcaption>
+    </figure>
+
+    <figure>
+      <div class="legend" id="legend-rss"></div>
+      <div class="chartbox" id="box-rss">
+        <svg id="chart-rss" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" role="img"
+             aria-label="Process memory above baseline against problem size, log-log, for five methods"></svg>
+        <div class="tip" id="tip-rss" hidden></div>
+      </div>
+      <figcaption>
+        <strong>Memory separates the direct solver from everything else.</strong> Its
+        curve is steeper and it never crosses back. Multigrid sits above Jacobi and
+        SSOR by a constant factor &mdash; it stores an operator for every level, roughly
+        4/3 of the fine-grid matrix in two dimensions &mdash; but on a parallel line.
+        A constant factor is a price; a different slope is a ceiling.
+      </figcaption>
+    </figure>
+
+    <div class="tw">
+      <table>
+        <caption>Observed exponents &mdash; log y = a + b log N, fitted on the largest half of the converged points</caption>
+        <thead>
+          <tr>
+            <th>Method</th>
+            <th>Iterations</th>
+            <th>Linear algebra</th>
+            <th>Total time</th>
+            <th>Process memory</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="swatch" style="background:var(--s3)"></span>CG + Jacobi</td>
+            <td class="num">N<sup>0.50</sup></td><td class="num">N<sup>1.26</sup></td>
+            <td class="num">N<sup>1.08</sup></td><td class="num">N<sup>0.51</sup></td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s4)"></span>CG + SSOR</td>
+            <td class="num">N<sup>0.47</sup></td><td class="num">N<sup>1.40</sup></td>
+            <td class="num">N<sup>1.28</sup></td><td class="num">N<sup>0.66</sup></td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s1)"></span>MG standalone</td>
+            <td class="num">N<sup>0.00</sup></td><td class="num">N<sup>0.89</sup></td>
+            <td class="num">N<sup>0.94</sup></td><td class="num">N<sup>0.74</sup></td>
+          </tr>
+          <tr class="hi">
+            <td><span class="swatch" style="background:var(--s2)"></span><strong>CG + MG</strong></td>
+            <td class="num">N<sup>0.02</sup></td><td class="num">N<sup>0.90</sup></td>
+            <td class="num">N<sup>0.99</sup></td><td class="num">N<sup>0.74</sup></td>
+          </tr>
+          <tr>
+            <td><span class="swatch" style="background:var(--s5)"></span>Direct (UMFPACK)</td>
+            <td class="num">N<sup>0.00</sup></td><td class="num">N<sup>1.40</sup></td>
+            <td class="num">N<sup>1.26</sup></td><td class="num">N<sup>0.93</sup></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Because Jacobi's iteration count grows while each iteration costs
+      O(N), its linear algebra grows like N<sup>1.26</sup>; SSOR is worse at
+      N<sup>1.40</sup>. Multigrid grows like N<sup>0.90</sup>. At the largest size
+      that is 62 seconds against 693 &mdash; and the gap widens without bound, because
+      these are exponents, not constants.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="num">04</span> Multigrid as a solver versus as a preconditioner</h2>
+    <p>
+      This is the comparison worth being careful about, and the answer is less
+      dramatic than it is often presented.
+    </p>
+    <p>
+      Both are mesh-independent &mdash; N<sup>0.00</sup> and N<sup>0.02</sup>. So
+      <strong>standalone multigrid already delivers the property that made the method
+      famous</strong>; it does not need CG to become optimal. What CG adds is a factor of
+      about two: 15 applications of the V-cycle where plain defect correction needs
+      31, and that ratio holds at every problem size in the sweep.
+    </p>
+    <p>
+      That is the expected result. Defect correction is a fixed-point iteration,
+      converging at the rate &rho; of the V-cycle; CG minimises over a growing
+      Krylov subspace and converges at a rate governed by &radic;&kappa; instead. CG
+      also guarantees monotone decrease of the energy-norm error, which a bare
+      V-cycle iteration does not, and it degrades gracefully if the smoother or
+      the coarse solve is imperfect.
+    </p>
+    <div class="callout">
+      <div class="t">So, is it worth comparing them?</div>
+      <p>
+        Yes &mdash; and the honest summary is <em>CG + MG is about twice as fast, not
+        asymptotically better</em>. A study that reports only one of the two is
+        leaving out exactly this relationship.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">05</span> What these numbers are not</h2>
+    <div class="callout warn">
+      <div class="t">Timings came from emulated hardware</div>
+      <p>
+        The only available deal.II build was an <code>arm64</code> image running under
+        emulation on an <code>x86_64</code> host. Iteration counts, residuals,
+        discretisation errors and byte-level memory are exact and
+        architecture-independent. <strong>The wall-clock seconds are not.</strong> The
+        exponents are ratios and largely survive the distortion, but absolute times
+        should not be quoted from this run; a native build would be needed for
+        numbers fit for publication.
+      </p>
+    </div>
+    <ul>
+      <li>
+        <strong>Jacobi's row is a failure, not a data point.</strong> Its H<sup>1</sup>
+        error differs from the other four, so it should never be presented as
+        &ldquo;same solution, faster&rdquo;.
+      </li>
+      <li>
+        <strong>Assembly is excluded from the time columns but not from the totals.</strong>
+        At the largest size assembly dominates &mdash; 162 s of multigrid's 330 s total &mdash;
+        so total-time gaps understate the solver-time gaps.
+      </li>
+      <li>
+        <strong>One operator, one discretisation.</strong> A variable coefficient
+        &kappa;(&xi;,&eta;) = 1.1 + sin<sup>2</sup>&xi; cos<sup>2</sup>&eta;, smooth and
+        bounded away from zero. Multigrid's advantage is sensitive to that; a
+        jumping coefficient would need a different smoother.
+      </li>
+    </ul>
+  </section>
+
+  <div class="foot">
+    <p>
+      Source, data and reproduction: <code>bench/results-d3.csv</code> holds the raw
+      rows behind every figure here; <code>bench/run_sweep.sh</code> produced it and
+      <code>bench/analyse.py</code> and <code>bench/plot.py</code> derive the tables and
+      exponents. The solver is a single-file deal.II program,
+      <code>src/main.cpp</code>.
+    </p>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var DATA = {"series":[
+    {"id":"mg-solver","label":"MG standalone","var":"--s1","pts":[
+      {"n":144,"it":1,"ok":true,"rss":25.2,"tla":0.17},
+      {"n":576,"it":23,"ok":true,"rss":26.6,"tla":0.39},
+      {"n":2304,"it":26,"ok":true,"rss":28.8,"tla":1.01},
+      {"n":9216,"it":30,"ok":true,"rss":38.6,"tla":2.82},
+      {"n":36864,"it":32,"ok":true,"rss":77.5,"tla":8.73},
+      {"n":147456,"it":31,"ok":true,"rss":227.8,"tla":32.0},
+      {"n":589824,"it":31,"ok":true,"rss":833.0,"tla":114.34}]},
+    {"id":"cg-mg","label":"CG + MG","var":"--s2","pts":[
+      {"n":144,"it":1,"ok":true,"rss":20.7,"tla":0.24},
+      {"n":576,"it":12,"ok":true,"rss":25.1,"tla":0.36},
+      {"n":2304,"it":13,"ok":true,"rss":27.1,"tla":0.75},
+      {"n":9216,"it":14,"ok":true,"rss":36.0,"tla":1.57},
+      {"n":36864,"it":14,"ok":true,"rss":80.0,"tla":4.53},
+      {"n":147456,"it":15,"ok":true,"rss":224.1,"tla":17.9},
+      {"n":589824,"it":15,"ok":true,"rss":793.1,"tla":62.11}]},
+    {"id":"cg-jacobi","label":"CG + Jacobi","var":"--s3","pts":[
+      {"n":144,"it":15,"ok":true,"rss":7.9,"tla":0.04},
+      {"n":576,"it":42,"ok":true,"rss":25.7,"tla":0.04},
+      {"n":2304,"it":86,"ok":true,"rss":26.6,"tla":0.24},
+      {"n":9216,"it":170,"ok":true,"rss":30.8,"tla":1.04},
+      {"n":36864,"it":338,"ok":true,"rss":51.3,"tla":6.3},
+      {"n":147456,"it":673,"ok":true,"rss":128.1,"tla":33.95},
+      {"n":589824,"it":1000,"ok":false,"rss":430.5,"tla":179.08}]},
+    {"id":"cg-ssor","label":"CG + SSOR","var":"--s4","pts":[
+      {"n":144,"it":22,"ok":true,"rss":5.7,"tla":0.05},
+      {"n":576,"it":41,"ok":true,"rss":23.4,"tla":0.1},
+      {"n":2304,"it":78,"ok":true,"rss":24.3,"tla":0.42},
+      {"n":9216,"it":136,"ok":true,"rss":29.0,"tla":2.04},
+      {"n":36864,"it":260,"ok":true,"rss":51.6,"tla":14.18},
+      {"n":147456,"it":508,"ok":true,"rss":127.8,"tla":101.64},
+      {"n":589824,"it":957,"ok":true,"rss":451.7,"tla":692.61}]},
+    {"id":"direct-umfpack","label":"Direct (UMFPACK)","var":"--s5","pts":[
+      {"n":144,"it":1,"ok":true,"rss":23.8,"tla":0.14},
+      {"n":576,"it":1,"ok":true,"rss":27.8,"tla":0.07},
+      {"n":2304,"it":1,"ok":true,"rss":36.4,"tla":0.4},
+      {"n":9216,"it":1,"ok":true,"rss":71.6,"tla":2.04},
+      {"n":36864,"it":1,"ok":true,"rss":224.5,"tla":11.5},
+      {"n":147456,"it":1,"ok":true,"rss":829.6,"tla":88.03},
+      {"n":589824,"it":1,"ok":true,"rss":3347.3,"tla":652.02}]}
+  ]};
+
+  var NS = "http://www.w3.org/2000/svg";
+  var M = {t:26, r:112, b:54, l:70};
+  var W = 720, H = 420;
+  var IW = W - M.l - M.r, IH = H - M.t - M.b;
+
+  function log10(v){ return Math.log(v) / Math.LN10; }
+  function fmtN(v){
+    if (v >= 1e6) return (v/1e6) + "M";
+    if (v >= 1e3) return (v/1e3) + "k";
+    return String(v);
+  }
+  function fmtY(v, key){
+    if (key === "it") return String(Math.round(v));
+    if (v >= 1000) return (v/1000).toFixed(v >= 10000 ? 0 : 1) + "k";
+    if (v >= 10) return String(Math.round(v));
+    return v.toFixed(1);
+  }
+  function tickLabel(p){
+    var v = Math.pow(10, p);
+    if (v >= 1e6) return (v / 1e6) + "M";
+    if (v >= 1e3) return (v / 1e3) + "k";
+    return String(v);
+  }
+
+  function el(name, attrs){
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function build(cfg){
+    var svg = document.getElementById(cfg.svg);
+    var box = document.getElementById(cfg.box);
+    var tip = document.getElementById(cfg.tip);
+    var key = cfg.key;
+
+    // Identity is never colour alone: every chart carries its legend, so a
+    // reader who cannot separate two hues still has the names.
+    var leg = document.getElementById(cfg.legend);
+    DATA.series.forEach(function(s){
+      var item = document.createElement("span");
+      var sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = "var(" + s["var"] + ")";
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(s.label));
+      leg.appendChild(item);
+    });
+
+    var xs = [], ys = [];
+    DATA.series.forEach(function(s){
+      s.pts.forEach(function(p){ xs.push(p.n); ys.push(p[key]); });
+    });
+
+    var xlo = Math.min.apply(null, xs) / 1.35, xhi = Math.max.apply(null, xs) * 1.35;
+    var ylo = Math.min.apply(null, ys) / 1.5,  yhi = Math.max.apply(null, ys) * 1.9;
+    var lxlo = log10(xlo), lxhi = log10(xhi);
+    var lylo = log10(ylo), lyhi = log10(yhi);
+
+    function X(v){ return M.l + (log10(v) - lxlo) / (lxhi - lxlo) * IW; }
+    function Y(v){ return M.t + IH - (log10(v) - lylo) / (lyhi - lylo) * IH; }
+
+    // gridlines at decades inside the domain
+    for (var p = Math.ceil(lylo); p <= Math.floor(lyhi); p++){
+      var yv = Math.pow(10, p), y = Y(yv);
+      svg.appendChild(el("line", {x1:M.l, y1:y, x2:M.l+IW, y2:y,
+        style:"stroke:var(--grid);stroke-width:1"}));
+      var t = el("text", {x:M.l-10, y:y+4, "text-anchor":"end",
+        style:"fill:var(--muted);font-family:var(--mono);font-size:12px"});
+      t.textContent = tickLabel(p);
+      svg.appendChild(t);
+    }
+    for (var q = Math.ceil(lxlo); q <= Math.floor(lxhi); q++){
+      var xv = Math.pow(10, q), x = X(xv);
+      svg.appendChild(el("line", {x1:x, y1:M.t, x2:x, y2:M.t+IH,
+        style:"stroke:var(--grid);stroke-width:1"}));
+      var tx = el("text", {x:x, y:M.t+IH+22, "text-anchor":"middle",
+        style:"fill:var(--muted);font-family:var(--mono);font-size:12px"});
+      tx.textContent = tickLabel(q);
+      svg.appendChild(tx);
+    }
+
+    // axis titles
+    var xl = el("text", {x:M.l+IW/2, y:H-8, "text-anchor":"middle",
+      style:"fill:var(--ink-2);font-family:var(--sans);font-size:12.5px"});
+    xl.textContent = "unknowns N";
+    svg.appendChild(xl);
+
+    var yl = el("text", {x:16, y:M.t+IH/2, "text-anchor":"middle",
+      transform:"rotate(-90 16 " + (M.t+IH/2) + ")",
+      style:"fill:var(--ink-2);font-family:var(--sans);font-size:12.5px"});
+    yl.textContent = cfg.ylabel;
+    svg.appendChild(yl);
+
+    // baseline
+    svg.appendChild(el("line", {x1:M.l, y1:M.t+IH, x2:M.l+IW, y2:M.t+IH,
+      style:"stroke:var(--rule-strong);stroke-width:1"}));
+
+    // series
+    DATA.series.forEach(function(s){
+      var ok = s.pts.filter(function(p){ return p.ok; });
+      var bad = s.pts.filter(function(p){ return !p.ok; });
+
+      if (ok.length > 1){
+        var d = ok.map(function(p, i){
+          return (i ? "L" : "M") + X(p.n).toFixed(1) + " " + Y(p[key]).toFixed(1);
+        }).join(" ");
+        svg.appendChild(el("path", {d:d, fill:"none",
+          style:"stroke:var(" + s["var"] + ");stroke-width:1.9;stroke-linejoin:round;stroke-linecap:round"}));
+      }
+      ok.forEach(function(p){
+        svg.appendChild(el("circle", {cx:X(p.n), cy:Y(p[key]), r:4.2,
+          style:"fill:var(" + s["var"] + ");stroke:var(--surface);stroke-width:1.6"}));
+      });
+      bad.forEach(function(p){
+        svg.appendChild(el("circle", {cx:X(p.n), cy:Y(p[key]), r:4.2,
+          style:"fill:var(--surface);stroke:var(" + s["var"] + ");stroke-width:2"}));
+      });
+
+      if (cfg.label.indexOf(s.id) >= 0){
+        var last = s.pts[s.pts.length-1];
+        // The two multigrid curves are close together on the memory panel, so
+        // their end-labels are pushed apart vertically rather than stacking.
+        var dy = (s.id === "mg-solver" ? -11 : 15);
+        var lt = el("text", {x:X(last.n)+11, y:Y(last[key])+4+dy,
+          style:"fill:var(--ink-2);font-family:var(--sans);font-size:12px"});
+        lt.textContent = s.label;
+        svg.appendChild(lt);
+      }
+    });
+
+    // ---- hover ----
+    var hover = el("line", {x1:0, y1:M.t, x2:0, y2:M.t+IH,
+      style:"stroke:var(--rule-strong);stroke-width:1;opacity:0"});
+    svg.appendChild(hover);
+
+    var hit = el("rect", {x:M.l, y:M.t, width:IW, height:IH,
+      fill:"transparent", style:"cursor:crosshair"});
+    svg.appendChild(hit);
+
+    var active = -1;
+    function show(ev){
+      var r = svg.getBoundingClientRect();
+      var px = (ev.clientX - r.left) / r.width * W;
+      var best = 0, bd = 1e9;
+      DATA.series[0].pts.forEach(function(p, i){
+        var d = Math.abs(X(p.n) - px);
+        if (d < bd){ bd = d; best = i; }
+      });
+      if (best === active){ move(ev, best); return; }
+      active = best;
+
+      var n = DATA.series[0].pts[best].n;
+      hover.setAttribute("x1", X(n));
+      hover.setAttribute("x2", X(n));
+      hover.style.opacity = 1;
+
+      tip.innerHTML = "";
+      var h = document.createElement("div");
+      h.className = "h";
+      h.textContent = "N = " + n.toLocaleString("en-US");
+      tip.appendChild(h);
+
+      var rows = DATA.series.map(function(s){
+        var p = s.pts[best];
+        return {s:s, p:p};
+      }).sort(function(a,b){ return b.p[key] - a.p[key]; });
+
+      rows.forEach(function(o){
+        var row = document.createElement("div");
+        row.className = "r";
+        var l = document.createElement("span");
+        l.className = "l";
+        var sw = document.createElement("span");
+        sw.className = "swatch";
+        sw.style.background = "var(" + o.s["var"] + ")";
+        l.appendChild(sw);
+        l.appendChild(document.createTextNode(o.s.label));
+        var v = document.createElement("span");
+        v.className = "v";
+        v.textContent = (key === "it")
+          ? (o.p.it + (o.p.ok ? "" : "*"))
+          : (o.p.rss >= 1000 ? (o.p.rss/1000).toFixed(2) + " GB" : o.p.rss.toFixed(1) + " MB");
+        row.appendChild(l); row.appendChild(v);
+        tip.appendChild(row);
+      });
+      if (key === "it"){
+        var note = document.createElement("div");
+        note.className = "h";
+        note.style.margin = "6px 0 0";
+        note.textContent = "* hit the 1000-iteration cap";
+        tip.appendChild(note);
+      }
+      tip.hidden = false;
+      move(ev, best);
+    }
+    function move(ev, best){
+      var n = DATA.series[0].pts[best].n;
+      var r = svg.getBoundingClientRect();
+      var scale = r.width / W;
+      // Absolute children of a scroll container are laid out in content
+      // coordinates and scroll with it, so scrollLeft is deliberately not
+      // added here -- doing so would push the tooltip further right on every
+      // scroll.
+      var left = X(n) * scale + 16;
+      var tw = tip.offsetWidth || 180;
+      if (left + tw > r.width) left = X(n) * scale - tw - 16;
+      tip.style.left = Math.max(4, left) + "px";
+      tip.style.top = Math.max(4, M.t * scale) + "px";
+    }
+    function hide(){
+      hover.style.opacity = 0;
+      tip.hidden = true;
+      active = -1;
+    }
+
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("pointerdown", show);
+    hit.addEventListener("pointerleave", hide);
+  }
+
+  build({svg:"chart-it", box:"box-it", tip:"tip-it", legend:"legend-it", key:"it",
+         ylabel:"iterations to 10⁻¹⁰", label:["cg-mg","mg-solver"]});
+  build({svg:"chart-rss", box:"box-rss", tip:"tip-rss", legend:"legend-rss", key:"rss",
+         ylabel:"process memory above baseline (MB)", label:["cg-mg","mg-solver"]});
+})();
+</script>
