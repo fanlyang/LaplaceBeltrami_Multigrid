@@ -15,10 +15,12 @@ WORKDIR /home/dealii/solver
 
 COPY CMakeLists.txt ./
 COPY src ./src
+COPY meshes ./meshes
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build -j"$(nproc)"
 
 # Default arguments: polynomial degree, number of refinement cycles.
+# The mesh defaults to meshes/vessel_ascii.vtk.
 ENTRYPOINT ["./build/solver"]
-CMD ["3", "5"]
+CMD ["1", "1"]

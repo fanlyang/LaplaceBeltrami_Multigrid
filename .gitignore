@@ -3,6 +3,7 @@
 
 # CMake / C++
 build/
+build-*/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -22,6 +23,10 @@ solver.exe
 
 # Solver output: matrices, vectors and level statistics
 *.coo
+out/
+
+# Python
+__pycache__/
 
 # Local backups
 *.orig
