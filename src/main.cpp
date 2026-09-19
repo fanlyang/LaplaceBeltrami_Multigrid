@@ -3,14 +3,18 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * Laplace-Beltrami problem on a torus,
- * solved with geometric multigrid preconditioned CG.
+ * solved with geometric multigrid preconditioned CG
+ * on adaptively refined meshes.
  *
- * Reference: deal.II step-38
+ * References: deal.II step-38 (surface finite elements),
+ *             deal.II step-6  (adaptive refinement, Kelly estimator),
+ *             deal.II step-16 (multigrid on adaptively refined meshes)
  *
  * ------------------------------------------------------------------------ */
 
 #include <deal.II/base/function.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/base/table_handler.h>
 #include <deal.II/base/utilities.h>
 
 #include <deal.II/lac/affine_constraints.h>
@@ -23,6 +27,7 @@
 #include <deal.II/lac/vector.h>
 
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_refinement.h>
 #include <deal.II/grid/manifold_lib.h>
 #include <deal.II/grid/tria.h>
 
@@ -44,12 +49,17 @@
 #include <deal.II/meshworker/mesh_loop.h>
 
 #include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/error_estimator.h>
+#include <deal.II/numerics/solution_transfer.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -61,7 +71,171 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 1. The problem
+   * 1. Parameters
+   *
+   * Everything that used to be a scattered constant or a bare command
+   * line argument lives here. The defaults are the values used when the
+   * corresponding command-line argument is omitted.
+   *
+   * ================================================================== */
+
+  // Which preconditioner the outer CG iteration runs with. This used to
+  // be a compile-time constant; it is now a run-time parameter, so that
+  // the three choices can be compared in a single binary.
+  enum class CgPreconditioner
+  {
+    jacobi,
+    ssor,
+    multigrid
+  };
+
+
+  struct Parameters
+  {
+    // -- discretisation ----------------------------------------------
+    // Polynomial degree of the Q_p element, and of the mapping.
+    unsigned int degree = 3;
+
+    // -- mesh and adaptivity -----------------------------------------
+    // Uniform refinements applied to the generated torus before the
+    // adaptive loop starts. These set how many levels the multigrid
+    // hierarchy has before any adaptivity, and they leave level 0 alone:
+    // level 0 is always the generated torus of 16 cells, so raising this
+    // adds levels without making the coarse solve more expensive.
+    unsigned int n_initial_refinements = 2;
+
+    // Number of cycles in the adaptive loop.
+    unsigned int n_adaptive_cycles = 4;
+
+    // Cells at or above this level are never marked for refinement.
+    // Zero means no cap.
+    unsigned int max_refinement_level = 8;
+
+    // In each cycle, the fraction of cells with the largest error
+    // indicator that is marked for refinement, and the fraction with the
+    // smallest indicator that is marked for coarsening.
+    double refine_fraction  = 0.3;
+    double coarsen_fraction = 0.0;
+
+    // -- linear solver -----------------------------------------------
+    CgPreconditioner preconditioner = CgPreconditioner::multigrid;
+
+    // Number of smoothing steps taken on each multigrid level.
+    unsigned int n_smoothing_steps = 2;
+
+    // -- behaviour ---------------------------------------------------
+    // Interpolate the previous cycle's solution onto the new mesh, and
+    // use it as the initial guess for the next solve. Turning this off
+    // makes every cycle start from zero.
+    bool transfer_solution = true;
+
+    // Write the A-global-cycle-*.coo and A-level-*-cycle-*.coo matrix
+    // dumps. On an adaptively refined mesh these are one matrix per level
+    // per cycle, so they are off by default. The small
+    // mg-level-info-cycle-*.txt summary is written either way.
+    bool dump_system_matrices = false;
+  };
+
+
+  // Read the parameters from the command line. The positional arguments
+  // keep the old shape, so that
+  //
+  //     ./solver 3 2 4
+  //
+  // means degree 3, two uniform refinements, four adaptive cycles.
+  Parameters
+  parse_command_line(const int argc, char *argv[])
+  {
+    Parameters parameters;
+
+    std::vector<std::string> positional;
+
+    for (int i = 1; i < argc; ++i)
+      {
+        const std::string argument = argv[i];
+
+        // The prefix of an option, up to and including the '=', so that
+        // the value can be taken as the remainder without counting
+        // characters by hand.
+        const auto value_of = [&argument](const std::string &prefix) {
+          return argument.substr(prefix.size());
+        };
+
+        if (argument == "--help" || argument == "-h")
+          {
+            std::cout
+              << "Usage: ./solver [degree] [n_initial_refinements]"
+                 " [n_adaptive_cycles] [refine_fraction] [coarsen_fraction]\n"
+              << "\n"
+              << "All positional arguments are optional and default to\n"
+              << "  degree                 3\n"
+              << "  n_initial_refinements  2\n"
+              << "  n_adaptive_cycles      4\n"
+              << "  refine_fraction        0.3\n"
+              << "  coarsen_fraction       0.0\n"
+              << "\n"
+              << "Options:\n"
+              << "  --preconditioner=NAME       jacobi | ssor | multigrid"
+                 " (default)\n"
+              << "  --max-refinement-level=N    no cells above this level are"
+                 " refined\n"
+              << "  --smoothing-steps=N         multigrid smoothing steps per"
+                 " level\n"
+              << "  --no-transfer               start every cycle from zero\n"
+              << "  --dump-matrices             write the .coo matrix dumps\n";
+            std::exit(0);
+          }
+        else if (argument.rfind("--preconditioner=", 0) == 0)
+          {
+            const std::string name = value_of("--preconditioner=");
+
+            if (name == "jacobi")
+              parameters.preconditioner = CgPreconditioner::jacobi;
+            else if (name == "ssor")
+              parameters.preconditioner = CgPreconditioner::ssor;
+            else if (name == "multigrid")
+              parameters.preconditioner = CgPreconditioner::multigrid;
+            else
+              AssertThrow(false,
+                          ExcMessage("Unknown preconditioner '" + name + "'"));
+          }
+        else if (argument.rfind("--max-refinement-level=", 0) == 0)
+          parameters.max_refinement_level =
+            std::stoi(value_of("--max-refinement-level="));
+        else if (argument.rfind("--smoothing-steps=", 0) == 0)
+          parameters.n_smoothing_steps =
+            std::stoi(value_of("--smoothing-steps="));
+        else if (argument == "--no-transfer")
+          parameters.transfer_solution = false;
+        else if (argument == "--dump-matrices")
+          parameters.dump_system_matrices = true;
+        else if (argument.rfind("--", 0) == 0)
+          AssertThrow(false, ExcMessage("Unknown option '" + argument + "'"));
+        else
+          positional.push_back(argument);
+      }
+
+    AssertThrow(positional.size() <= 5,
+                ExcMessage("At most five positional arguments are accepted"));
+
+    if (positional.size() > 0)
+      parameters.degree = std::stoi(positional[0]);
+    if (positional.size() > 1)
+      parameters.n_initial_refinements = std::stoi(positional[1]);
+    if (positional.size() > 2)
+      parameters.n_adaptive_cycles = std::stoi(positional[2]);
+    if (positional.size() > 3)
+      parameters.refine_fraction = std::stod(positional[3]);
+    if (positional.size() > 4)
+      parameters.coarsen_fraction = std::stod(positional[4]);
+
+    return parameters;
+  }
+
+
+  /* ==================================================================
+   *
+   * 2. The problem
    *
    * We solve the surface (Laplace-Beltrami) problem
    *
@@ -151,7 +325,7 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 2. Exact solution
+   * 3. Exact solution
    *
    *     u(xi, eta) = sin(xi) sin(eta)
    *
@@ -225,7 +399,7 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 3. Right-hand side
+   * 4. Right-hand side
    *
    *     f = -div_g(kappa grad_g u) + u
    *
@@ -299,7 +473,7 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 4. Scratch and copy data for the mesh loop
+   * 5. Scratch and copy data for the mesh loop
    *
    * ================================================================== */
 
@@ -351,32 +525,24 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 5. The problem class
+   * 6. The problem class
    *
    * ================================================================== */
-
-  // Which preconditioner the outer CG iteration runs with.
-  // Change this constant to switch between the available choices.
-  enum class CgPreconditioner
-  {
-    jacobi,
-    ssor,
-    multigrid
-  };
-
-  constexpr CgPreconditioner cg_preconditioner = CgPreconditioner::multigrid;
-
 
   template <int dim, int spacedim>
   class LaplaceBeltramiProblem
   {
   public:
-    LaplaceBeltramiProblem(const unsigned int degree,
-                           const unsigned int n_refinement_cycles);
+    LaplaceBeltramiProblem(const Parameters &parameters);
 
     void run();
 
   private:
+    // -- mesh --------------------------------------------------------
+    void make_grid();
+    void refine_mesh();
+    void describe_mesh() const;
+
     // -- assembly ----------------------------------------------------
     template <class Iterator>
     void cell_worker(const Iterator             &cell,
@@ -387,6 +553,9 @@ namespace LaplaceBeltrami
     void assemble_system();
     void assemble_multigrid();
 
+    // -- error estimation --------------------------------------------
+    void estimate_error();
+
     // -- solution ----------------------------------------------------
     void solve();
 
@@ -395,16 +564,22 @@ namespace LaplaceBeltrami
     void solve_with_multigrid(SolverCG<Vector<double>> &solver);
 
     // -- post-processing ---------------------------------------------
-    void compute_error() const;
+    void compute_error();
+    void record_convergence(const unsigned int cycle);
+    void write_convergence_table();
     void output_results(const unsigned int cycle) const;
 
-    // -- data --------------------------------------------------------
+    // -- parameters --------------------------------------------------
+    const Parameters prm;
+
+    // -- mesh and finite element -------------------------------------
     Triangulation<dim, spacedim> triangulation;
 
     const FE_Q<dim, spacedim>     fe;
     DoFHandler<dim, spacedim>     dof_handler;
     const MappingQ<dim, spacedim> mapping;
 
+    // -- the active system -------------------------------------------
     SparsityPattern           sparsity_pattern;
     SparseMatrix<double>      system_matrix;
     AffineConstraints<double> constraints;
@@ -412,11 +587,42 @@ namespace LaplaceBeltrami
     Vector<double> solution;
     Vector<double> system_rhs;
 
-    const unsigned int degree;
-    const unsigned int n_refinement_cycles;
+    // -- adaptivity --------------------------------------------------
+    //
+    // error_indicators belongs to the mesh of the cycle that produced it.
+    // It is written by estimate_error() at the end of a cycle and read by
+    // refine_mesh() at the start of the next one, which is why it has to
+    // live here rather than in either function.
+    Vector<float> error_indicators;
 
-    // Geometric multigrid hierarchy: one operator and one interface
-    // operator per level.
+    // Set up by refine_mesh() before the mesh changes, consumed by run()
+    // once the new degrees of freedom and constraints exist. The old
+    // solution is kept in solution_old, because the transfer object may
+    // hold on to it until interpolate() is called, while setup_system()
+    // is at liberty to reuse solution itself.
+    std::unique_ptr<SolutionTransfer<dim, Vector<double>, spacedim>>
+                 solution_transfer;
+    Vector<double> solution_old;
+
+    // -- convergence bookkeeping -------------------------------------
+    TableHandler convergence_table;
+
+    // TableHandler::n_rows() is protected, so track this separately:
+    // with n_adaptive_cycles == 0 there is nothing to print.
+    bool have_convergence_rows = false;
+
+    double       error_h1      = 0.0;
+    double       error_l2      = 0.0;
+    double       error_linf    = 0.0;
+    unsigned int n_cg_iterations = 0;
+
+    // Previous-cycle values, for the observed convergence rates.
+    double previous_error_h1 = 0.0;
+    double previous_error_l2 = 0.0;
+    double previous_dofs     = 0.0;
+
+    // -- geometric multigrid hierarchy -------------------------------
+    // One operator and one interface operator per level.
     MGLevelObject<SparsityPattern> mg_sparsity_patterns;
     MGLevelObject<SparsityPattern> mg_interface_sparsity_patterns;
 
@@ -429,21 +635,131 @@ namespace LaplaceBeltrami
 
   template <int dim, int spacedim>
   LaplaceBeltramiProblem<dim, spacedim>::LaplaceBeltramiProblem(
-    const unsigned int degree,
-    const unsigned int n_refinement_cycles)
-    : triangulation(
+    const Parameters &parameters)
+    : prm(parameters)
+    , triangulation(
         Triangulation<dim, spacedim>::limit_level_difference_at_vertices)
-    , fe(degree)
+    , fe(prm.degree)
     , dof_handler(triangulation)
-    , mapping(degree)
-    , degree(degree)
-    , n_refinement_cycles(n_refinement_cycles)
+    , mapping(prm.degree)
   {}
 
 
   /* ==================================================================
    *
-   * 6. Degrees of freedom and matrix structures
+   * 7. The mesh
+   *
+   * make_grid()  builds the torus and refines it uniformly a fixed number
+   *              of times, which sets the multigrid hierarchy up before
+   *              adaptivity starts.
+   *
+   * refine_mesh() turns the error indicators of the previous cycle into a
+   *              new mesh: mark, then refine and coarsen.
+   *
+   * ================================================================== */
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::make_grid()
+  {
+    // Build the torus once; from then on it is refined only.
+    GridGenerator::torus(triangulation, TorusGeometry::R, TorusGeometry::r);
+
+    // Tell the triangulation that its geometry is a torus, so that
+    // vertices created during refinement are placed on the true surface
+    // instead of on the surrounding polyhedron.
+    triangulation.set_all_manifold_ids(0);
+    triangulation.set_manifold(0,
+                               TorusManifold<dim>(TorusGeometry::R,
+                                                  TorusGeometry::r));
+
+    // The first refinements are uniform. Level 0 stays the generated
+    // torus of 16 cells, so the coarse solve does not grow with this.
+    if (prm.n_initial_refinements > 0)
+      triangulation.refine_global(prm.n_initial_refinements);
+  }
+
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::refine_mesh()
+  {
+    // The indicators were computed at the end of the previous cycle, on
+    // exactly this mesh, one per active cell and in active-cell order.
+    Assert(error_indicators.size() == triangulation.n_active_cells(),
+           ExcDimensionMismatch(error_indicators.size(),
+                                triangulation.n_active_cells()));
+
+    Vector<float> criteria(error_indicators);
+
+    // refine_and_coarsen_fixed_number has no argument for a maximum
+    // level, so a cap is imposed by zeroing the indicators of the cells
+    // that have reached it. Note that its last argument is a maximum
+    // *cell count*, not a level: it defaults to no cap at all, and
+    // passing a value below the current cell count silently disables
+    // refinement altogether, so it is left at its default here.
+    if (prm.max_refinement_level > 0)
+      {
+        unsigned int index = 0;
+        for (const auto &cell : triangulation.active_cell_iterators())
+          {
+            if (static_cast<unsigned int>(cell->level()) >=
+                prm.max_refinement_level)
+              criteria[index] = 0.0;
+
+            ++index;
+          }
+      }
+
+    GridRefinement::refine_and_coarsen_fixed_number(triangulation,
+                                                    criteria,
+                                                    prm.refine_fraction,
+                                                    prm.coarsen_fraction);
+
+    // Remember the old solution before the mesh changes. The
+    // interpolation onto the new mesh happens later, in run(), once the
+    // new degrees of freedom and the new constraints exist.
+    if (prm.transfer_solution)
+      {
+        solution_old = solution;
+
+        solution_transfer =
+          std::make_unique<
+            SolutionTransfer<dim, Vector<double>, spacedim>>(dof_handler);
+
+        solution_transfer->prepare_for_coarsening_and_refinement(solution_old);
+      }
+
+    triangulation.execute_coarsening_and_refinement();
+  }
+
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::describe_mesh() const
+  {
+    unsigned int n_boundary_faces = 0;
+
+    for (const auto &cell : triangulation.active_cell_iterators())
+      for (const auto f : cell->face_indices())
+        if (cell->face(f)->at_boundary())
+          ++n_boundary_faces;
+
+    std::cout << "   Active cells: " << triangulation.n_active_cells()
+              << "   Levels: " << triangulation.n_levels() << std::endl;
+
+    std::cout << "   Cells by level:";
+    for (unsigned int level = 0; level < triangulation.n_levels(); ++level)
+      std::cout << " " << triangulation.n_cells(level);
+    std::cout << std::endl;
+
+    // The torus is closed, so there should never be a boundary face. This
+    // is a cheap check that adaptive refinement has not torn the seam.
+    std::cout << "   Vertices: " << triangulation.n_vertices()
+              << "   Boundary faces: " << n_boundary_faces << std::endl;
+  }
+
+
+  /* ==================================================================
+   *
+   * 8. Degrees of freedom and matrix structures
    *
    * ================================================================== */
 
@@ -477,8 +793,7 @@ namespace LaplaceBeltrami
     //
     // The torus is closed, so there are no physical boundary conditions
     // to impose. Only hanging nodes from adaptive refinement have to be
-    // eliminated, and here refinement is uniform, so in practice this
-    // set is empty.
+    // eliminated, and on a uniformly refined mesh this set is empty.
     constraints.clear();
     DoFTools::make_hanging_node_constraints(dof_handler, constraints);
     constraints.close();
@@ -516,7 +831,9 @@ namespace LaplaceBeltrami
 
 
         // The interface matrix, holding the entries that couple degrees
-        // of freedom across refinement edges.
+        // of freedom across refinement edges. On an adaptively refined
+        // mesh this is what makes the V-cycle correct at the level
+        // interfaces; on a uniformly refined mesh it stays empty.
         DynamicSparsityPattern dsp_interface(dof_handler.n_dofs(level),
                                              dof_handler.n_dofs(level));
 
@@ -534,7 +851,7 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 7. Cell worker
+   * 9. Cell worker
    *
    * Computes the local contributions
    *
@@ -611,7 +928,7 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 8. Assembly
+   * 10. Assembly
    *
    * Both the active system and the multigrid hierarchy are assembled
    * from the same cell worker, driven by MeshWorker::mesh_loop. In the
@@ -650,7 +967,7 @@ namespace LaplaceBeltrami
     ScratchData<dim, spacedim> scratch_data(
       mapping,
       fe,
-      2 * degree + 1,
+      2 * prm.degree + 1,
       update_values | update_gradients | update_quadrature_points |
         update_JxW_values);
 
@@ -725,7 +1042,7 @@ namespace LaplaceBeltrami
     ScratchData<dim, spacedim> scratch_data(
       mapping,
       fe,
-      2 * degree + 1,
+      2 * prm.degree + 1,
       update_values | update_gradients | update_quadrature_points |
         update_JxW_values);
 
@@ -741,21 +1058,54 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 9. Solution
+   * 11. Error estimation
+   *
+   * The Kelly estimator integrates the jump of the normal derivative of
+   * the solution across each face. On the torus there is no boundary, so
+   * the map of Neumann boundary conditions that would add a boundary
+   * term for a problem that had one stays empty.
+   *
+   * The result is one indicator per active cell, in active-cell order,
+   * which is the form GridRefinement expects.
+   *
+   * ================================================================== */
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::estimate_error()
+  {
+    error_indicators.reinit(triangulation.n_active_cells());
+
+    const std::map<types::boundary_id, const Function<spacedim, double> *>
+      neumann_bc;
+
+    KellyErrorEstimator<dim, spacedim>::estimate(
+      mapping,
+      dof_handler,
+      QGauss<dim - 1>(prm.degree + 1),
+      neumann_bc,
+      solution,
+      error_indicators);
+  }
+
+
+  /* ==================================================================
+   *
+   * 12. Solution
    *
    * ================================================================== */
 
   template <int dim, int spacedim>
   void LaplaceBeltramiProblem<dim, spacedim>::solve()
   {
+    // The relative tolerance has to tighten with the mesh, otherwise the
+    // algebraic error eventually dominates the discretisation error.
     SolverControl solver_control(1000, 1e-10 * system_rhs.l2_norm());
     SolverCG<Vector<double>> solver(solver_control);
 
-    solution = 0;
+    // solution holds the initial guess: the previous cycle's solution
+    // interpolated onto this mesh, or zero if the transfer is off.
 
-    // Which preconditioner is used is decided by the constant
-    // cg_preconditioner at the top of the file.
-    switch (cg_preconditioner)
+    switch (prm.preconditioner)
       {
         case CgPreconditioner::jacobi:
           solve_with_jacobi(solver);
@@ -770,7 +1120,9 @@ namespace LaplaceBeltrami
           break;
       }
 
-    std::cout << "   Number of CG iterations: " << solver_control.last_step()
+    n_cg_iterations = solver_control.last_step();
+
+    std::cout << "   Number of CG iterations: " << n_cg_iterations
               << std::endl;
 
     // Make the constrained degrees of freedom consistent with the ones
@@ -816,6 +1168,9 @@ namespace LaplaceBeltrami
     mg_transfer.build(dof_handler);
 
     // -- coarse grid solver ------------------------------------------
+    //
+    // Level 0 is the generated 16-cell torus and never grows, so a dense
+    // solve there stays cheap.
     FullMatrix<double> coarse_matrix;
     coarse_matrix.copy_from(mg_matrices[0]);
 
@@ -827,7 +1182,9 @@ namespace LaplaceBeltrami
 
     mg::SmootherRelaxation<Smoother, Vector<double>> mg_smoother;
     mg_smoother.initialize(mg_matrices);
-    mg_smoother.set_steps(2);
+    mg_smoother.set_steps(prm.n_smoothing_steps);
+    // A symmetric smoother, so that the V-cycle is a symmetric operator
+    // and CG remains valid.
     mg_smoother.set_symmetric(true);
 
     // -- level and interface operators -------------------------------
@@ -843,6 +1200,8 @@ namespace LaplaceBeltrami
                                  mg_smoother,
                                  mg_smoother);
 
+    // Without these the V-cycle would ignore the level interfaces, which
+    // is exactly what an adaptively refined mesh creates.
     mg.set_edge_matrices(mg_interface_down, mg_interface_up);
 
 
@@ -859,14 +1218,14 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 10. Error against the exact solution
+   * 13. Post-processing
    *
    * ================================================================== */
 
   template <int dim, int spacedim>
-  void LaplaceBeltramiProblem<dim, spacedim>::compute_error() const
+  void LaplaceBeltramiProblem<dim, spacedim>::compute_error()
   {
-    const QGauss<dim> quadrature(2 * degree + 1);
+    const QGauss<dim> quadrature(2 * prm.degree + 1);
 
     // Integrate the difference between the discrete and the exact
     // solution cell by cell, then reduce it to one global number.
@@ -886,20 +1245,94 @@ namespace LaplaceBeltrami
                                                norm);
     };
 
-    std::cout << "   H1 error = " << error_in_norm(VectorTools::H1_seminorm)
-              << ",  L2 error = " << error_in_norm(VectorTools::L2_norm)
-              << ",  Linfty = " << error_in_norm(VectorTools::Linfty_norm)
-              << std::endl;
+    error_h1   = error_in_norm(VectorTools::H1_seminorm);
+    error_l2   = error_in_norm(VectorTools::L2_norm);
+    error_linf = error_in_norm(VectorTools::Linfty_norm);
+
+    std::cout << "   H1 error = " << error_h1 << ",  L2 error = " << error_l2
+              << ",  Linfty = " << error_linf << std::endl;
+  }
+
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::record_convergence(
+    const unsigned int cycle)
+  {
+    const double dofs = dof_handler.n_dofs();
+
+    convergence_table.add_value("cycle", cycle);
+    convergence_table.add_value("cells", triangulation.n_active_cells());
+    convergence_table.add_value("levels", triangulation.n_levels());
+    convergence_table.add_value("dofs", dof_handler.n_dofs());
+    convergence_table.add_value("cg_iters", n_cg_iterations);
+    convergence_table.add_value("H1_error", error_h1);
+    convergence_table.add_value("L2_error", error_l2);
+    convergence_table.add_value("Linf_error", error_linf);
+
+    // The observed rate against the number of unknowns. On an adaptively
+    // refined mesh h is no longer a single number, so the number of
+    // unknowns is the meaningful measure. Cycle 0 has nothing to compare
+    // against and reports zero.
+    double h1_rate = 0.0;
+    double l2_rate = 0.0;
+
+    if (previous_dofs > 0.0 && dofs > previous_dofs)
+      {
+        if (previous_error_h1 > 0.0 && error_h1 > 0.0)
+          h1_rate = std::log(previous_error_h1 / error_h1) /
+                    std::log(dofs / previous_dofs);
+
+        if (previous_error_l2 > 0.0 && error_l2 > 0.0)
+          l2_rate = std::log(previous_error_l2 / error_l2) /
+                    std::log(dofs / previous_dofs);
+      }
+
+    convergence_table.add_value("H1_rate", h1_rate);
+    convergence_table.add_value("L2_rate", l2_rate);
+
+    previous_error_h1 = error_h1;
+    previous_error_l2 = error_l2;
+    previous_dofs     = dofs;
+
+    have_convergence_rows = true;
+  }
+
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::write_convergence_table()
+  {
+    if (!have_convergence_rows)
+      return;
+
+    convergence_table.set_precision("H1_error", 6);
+    convergence_table.set_precision("L2_error", 6);
+    convergence_table.set_precision("Linf_error", 6);
+
+    convergence_table.set_scientific("H1_error", true);
+    convergence_table.set_scientific("L2_error", true);
+    convergence_table.set_scientific("Linf_error", true);
+
+    convergence_table.set_precision("H1_rate", 3);
+    convergence_table.set_precision("L2_rate", 3);
+
+    std::cout << std::endl
+              << "================================================" << std::endl
+              << "Convergence" << std::endl
+              << "================================================" << std::endl;
+
+    convergence_table.write_text(std::cout);
   }
 
 
   /* ==================================================================
    *
-   * 11. Output
+   * 14. Output
    *
-   * Besides the solution field, we write out the linear systems that
-   * were solved, so that they can be inspected or reused elsewhere:
-   * the active system A u = f and every multigrid level operator A_l.
+   * Besides the solution field, the linear systems that were solved can
+   * be written out for external analysis: the active system A u = f and
+   * every multigrid level operator A_l. The multi-megabyte matrices are
+   * off by default (see --dump-matrices), because an adaptively refined
+   * mesh produces one per level per cycle.
    *
    * ================================================================== */
 
@@ -948,9 +1381,13 @@ namespace LaplaceBeltrami
     const std::string cycle_str = std::to_string(cycle);
 
     // -- 1. the solution field, for visualisation --------------------
+    //
+    // The error indicators go into the same file, so that the adaptive
+    // refinement pattern can be inspected where it was decided.
     DataOut<dim, spacedim> data_out;
     data_out.attach_dof_handler(dof_handler);
     data_out.add_data_vector(solution, "solution");
+    data_out.add_data_vector(error_indicators, "error_indicator");
     data_out.build_patches(mapping, mapping.get_degree());
 
     const std::string vtk_name = "solution-" + cycle_str + ".vtk";
@@ -961,28 +1398,12 @@ namespace LaplaceBeltrami
     std::cout << "   Solution written to " << vtk_name << std::endl;
 
 
-    // -- 2. the active system A u = f --------------------------------
-    const std::string global_A = "A-global-cycle-" + cycle_str + ".coo";
-    const std::string global_f = "rhs-global-cycle-" + cycle_str + ".txt";
-
-    write_sparse_matrix(system_matrix, global_A);
-    write_vector(system_rhs, global_f);
-
-
-    // -- 3. every multigrid level operator A_l -----------------------
+    // -- 2. a short description of the hierarchy ---------------------
     //
-    // No level right-hand side is written: in a V-cycle the coarse grid
-    // right-hand side is the restricted residual, not an independently
-    // assembled f_l.
+    // Small enough to always write, and it is the summary that says how
+    // the adaptive mesh translated into multigrid levels.
     const unsigned int n_levels = triangulation.n_levels();
 
-    for (unsigned int level = 0; level < n_levels; ++level)
-      write_sparse_matrix(mg_matrices[level],
-                          "A-level-" + std::to_string(level) + "-cycle-" +
-                            cycle_str + ".coo");
-
-
-    // -- 4. a short description of the hierarchy ---------------------
     const std::string info_name = "mg-level-info-cycle-" + cycle_str + ".txt";
 
     std::ofstream info(info_name);
@@ -995,6 +1416,28 @@ namespace LaplaceBeltrami
            << mg_matrices[level].n_nonzero_elements() << "\n";
 
 
+    // -- 3. the matrices, on request ---------------------------------
+    if (!prm.dump_system_matrices)
+      {
+        std::cout << "   Analysis output: " << info_name
+                  << "  (matrix dumps off; use --dump-matrices)" << std::endl;
+        return;
+      }
+
+    const std::string global_A = "A-global-cycle-" + cycle_str + ".coo";
+    const std::string global_f = "rhs-global-cycle-" + cycle_str + ".txt";
+
+    write_sparse_matrix(system_matrix, global_A);
+    write_vector(system_rhs, global_f);
+
+    // No level right-hand side is written: in a V-cycle the coarse grid
+    // right-hand side is the restricted residual, not an independently
+    // assembled f_l.
+    for (unsigned int level = 0; level < n_levels; ++level)
+      write_sparse_matrix(mg_matrices[level],
+                          "A-level-" + std::to_string(level) + "-cycle-" +
+                            cycle_str + ".coo");
+
     std::cout << "   Analysis output: " << global_A << ", " << global_f << ", "
               << "A-level-*-cycle-" << cycle << ".coo, " << info_name
               << std::endl;
@@ -1003,25 +1446,16 @@ namespace LaplaceBeltrami
 
   /* ==================================================================
    *
-   * 12. Driver
+   * 15. Driver
    *
    * ================================================================== */
 
   template <int dim, int spacedim>
   void LaplaceBeltramiProblem<dim, spacedim>::run()
   {
-    // Build the torus once; from then on it is only refined uniformly.
-    GridGenerator::torus(triangulation, TorusGeometry::R, TorusGeometry::r);
+    make_grid();
 
-    // Tell the triangulation that its geometry is a torus, so that
-    // vertices created during refinement are placed on the true surface
-    // instead of on the surrounding polyhedron.
-    triangulation.set_all_manifold_ids(0);
-    triangulation.set_manifold(0,
-                               TorusManifold<dim>(TorusGeometry::R,
-                                                  TorusGeometry::r));
-
-    for (unsigned int cycle = 0; cycle < n_refinement_cycles; ++cycle)
+    for (unsigned int cycle = 0; cycle < prm.n_adaptive_cycles; ++cycle)
       {
         std::cout << std::endl
                   << "================================================"
@@ -1030,25 +1464,53 @@ namespace LaplaceBeltrami
                   << "================================================"
                   << std::endl;
 
-
+        // Refine at the top of the cycle that needs the new mesh. The
+        // indicators consumed here were produced by estimate_error() at
+        // the end of the previous cycle, on the previous mesh.
         if (cycle > 0)
-          triangulation.refine_global(1);
+          refine_mesh();
 
-
-        std::cout << "   Active cells: " << triangulation.n_active_cells()
-                  << std::endl
-                  << "   Vertices: " << triangulation.n_vertices() << std::endl
-                  << "   Levels: " << triangulation.n_levels() << std::endl;
-
+        describe_mesh();
 
         setup_system();        // DoFs, constraints, sparsity patterns
+
+        // Now that the new degrees of freedom and constraints exist, put
+        // the previous solution onto this mesh as the initial guess.
+        if (solution_transfer)
+          {
+            solution_transfer->interpolate(solution);
+
+            // The system handed to CG is the condensed one: the row and
+            // column of a constrained (hanging) dof hold only the
+            // artificial diagonal that distribute_local_to_global writes
+            // there, and the matching right-hand side entry is zero, so a
+            // condensed solution vector is zero at those dofs. The initial
+            // guess has to be too.
+            //
+            // This is not just tidiness. The multigrid transfer and the
+            // level smoothers assume the residual vanishes at the hanging
+            // dofs; a nonzero guess there leaves a nonzero residual, the
+            // V-cycle then returns garbage, and CG amplifies it until it
+            // overflows. Starting from zero satisfies the assumption for
+            // free, which is why the problem only appears once a solution
+            // is transferred between meshes. The hanging values are put
+            // back by constraints.distribute() at the end of solve().
+            constraints.set_zero(solution);
+
+            solution_transfer.reset();
+          }
+
         assemble_system();     // the active system A u = f
         assemble_multigrid();  // the level operators of the V-cycle
 
         solve();
+        estimate_error();
         compute_error();
+        record_convergence(cycle);
         output_results(cycle);
       }
+
+    write_convergence_table();
   }
 
 } // namespace LaplaceBeltrami
@@ -1066,19 +1528,9 @@ int main(int argc, char *argv[])
     {
       using namespace LaplaceBeltrami;
 
-      if (argc != 3)
-        {
-          std::cerr << "Usage: ./solver <degree> <n_refinement_cycles>"
-                    << std::endl;
-          return 1;
-        }
+      const Parameters parameters = parse_command_line(argc, argv);
 
-      const unsigned int degree = std::stoi(argv[1]);
-
-      const unsigned int n_refinement_cycles = std::stoi(argv[2]);
-
-      LaplaceBeltramiProblem<2, 3> laplace_beltrami(degree,
-                                                    n_refinement_cycles);
+      LaplaceBeltramiProblem<2, 3> laplace_beltrami(parameters);
 
       laplace_beltrami.run();
     }

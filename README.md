@@ -71,34 +71,66 @@ f_i = \int_K f \, \varphi_i \, dS,$$
 
 with the gradients and the Jacobian weights coming from the curved mapping, so
 the integral is taken over the surface of the torus rather than over a flat
-reference cell. Refinement is uniform, which keeps the mesh hierarchy simple.
+reference cell.
+
+**Refinement.** The mesh is refined *adaptively*. Each cycle estimates the error
+cell by cell with the Kelly estimator, marks a fraction of the cells, and refines
+them; the previous solution is interpolated onto the new mesh and used as the
+initial guess for the next solve. Setting `refine_fraction` to 1 turns this back
+into uniform refinement (see [Results](#7-results)).
+
+The triangulation carries `limit_level_difference_at_vertices`, the flag that
+keeps neighbouring cells within one refinement level of one another. It is what
+makes a multigrid hierarchy on a non-uniform mesh well defined, and on a uniform
+mesh it costs nothing.
 
 ---
 
 ## 3. The multigrid preconditioner
 
 The outer iteration is `SolverCG` with a relative tolerance of $10^{-10}$ and a
-limit of 1000 iterations. Three preconditioners are implemented; the active one
-is chosen by a **compile-time constant** near the top of `src/main.cpp`:
+limit of 1000 iterations. Three preconditioners are implemented, and which one is
+used is a **run-time** choice:
 
-```cpp
-enum class CgPreconditioner { jacobi, ssor, multigrid };
-
-constexpr CgPreconditioner cg_preconditioner = CgPreconditioner::multigrid;
+```bash
+./solver --preconditioner=multigrid     # default
+./solver --preconditioner=ssor
+./solver --preconditioner=jacobi
 ```
 
-Changing that one line switches between Jacobi, SSOR and geometric multigrid.
+so the three can be compared without recompiling.
 
 The multigrid preconditioner is a V-cycle built on the same finite element
 space, restricted to each level:
 
-- **Smoother** — `PreconditionSOR` with 2 symmetric steps per level.
+- **Smoother** — `PreconditionSOR` with `--smoothing-steps` (default 2) symmetric steps per level.
 - **Coarse solver** — `MGCoarseGridHouseholder` on the level-0 matrix.
 - **Transfer** — `MGTransferPrebuilt`.
 - **Interface matrices** — assembled over refinement edges via `is_interface_matrix_entry`, so the V-cycle handles the level interfaces correctly.
 
 Because the level matrices come from the same `cell_worker` as the active
 system, the hierarchy is a true geometric multigrid hierarchy for this operator.
+
+**What an adaptive mesh changes, and one trap in it.** On a uniformly refined
+mesh the interface matrices are empty and no degree of freedom sits on a
+refinement edge, so none of the adaptive machinery is exercised. On an adaptively
+refined mesh both become live, and one further thing has to be right:
+
+> **The initial guess must vanish at the hanging nodes.**
+
+The system handed to CG is the *condensed* one. `AffineConstraints::distribute_local_to_global()`
+never writes into the row or column of a constrained degree of freedom — it leaves
+only an artificial nonzero diagonal there, with a zero right-hand side entry. A
+condensed solution vector is therefore zero at those degrees of freedom, and the
+initial guess has to be too.
+
+If it is not, the residual is nonzero at the hanging nodes. The multigrid transfer
+and the level smoothers assume it vanishes there, so the V-cycle returns garbage
+and CG amplifies it until it overflows. Starting from zero satisfies the assumption
+for free, which is why the trap only springs once a solution is interpolated
+between meshes — and why it shows up as a *divergence*, not a wrong answer. The
+code calls `constraints.set_zero(solution)` after the transfer for exactly this
+reason.
 
 **Why a codimension-one deal.II is required.** The object that turns the V-cycle
 into a preconditioner for the outer CG iteration is `PreconditionMG`,
@@ -181,19 +213,40 @@ care of include paths, compiler flags and the libraries to link.
 ## 5. Running
 
 ```bash
-./build/solver <degree> <n_refinement_cycles>
+./build/solver [degree] [n_initial_refinements] [n_adaptive_cycles] \
+               [refine_fraction] [coarsen_fraction]
 ```
 
-For example
+Every argument is optional, and `./build/solver --help` prints the same list.
 
-```bash
-./build/solver 3 5
-```
+| Argument | Default | Meaning |
+| --- | ---: | --- |
+| `degree` | 3 | polynomial degree of `FE_Q` and of the mapping |
+| `n_initial_refinements` | 2 | uniform refinements before the adaptive loop |
+| `n_adaptive_cycles` | 4 | number of cycles in the adaptive loop |
+| `refine_fraction` | 0.3 | fraction of cells marked for refinement per cycle |
+| `coarsen_fraction` | 0.0 | fraction of cells marked for coarsening per cycle |
 
-runs a cubic ($Q_3$) discretisation through 5 uniform refinement cycles, printing
-for each cycle: the mesh sizes, the number of degrees of freedom, the number of
+| Option | Effect |
+| --- | --- |
+| `--preconditioner=NAME` | `jacobi`, `ssor` or `multigrid` (default) |
+| `--max-refinement-level=N` | never refine a cell at or above level `N` |
+| `--smoothing-steps=N` | multigrid smoothing steps per level (default 2) |
+| `--no-transfer` | start every cycle from zero, instead of interpolating the previous solution |
+| `--dump-matrices` | also write the `.coo` matrix dumps (off by default) |
+
+`n_initial_refinements` leaves level 0 alone: level 0 is always the generated
+16-cell torus, so this sets how many levels the hierarchy starts with without
+making the coarse solve any more expensive.
+
+Each cycle prints the mesh size, the degrees of freedom per level, the number of
 CG iterations, and the $H^1$, $L^2$ and $L^\infty$ errors against the exact
-solution.
+solution. A convergence table is printed once at the end, with the observed rate
+measured against the number of unknowns — on an adaptively refined mesh $h$ is no
+longer a single number, so the number of unknowns is the meaningful measure.
+
+**Uniform refinement is the special case `refine_fraction = 1`**, which is how the
+baseline table in [Results](#7-results) is reproduced.
 
 All output files are written into the **current working directory**, so run the
 program from a scratch directory if you want to keep them separate.
@@ -202,15 +255,24 @@ program from a scratch directory if you want to keep them separate.
 
 ## 6. Output files
 
-For a run with `n_refinement_cycles = N`, each cycle `c = 0 … N-1` produces:
+For a run with `n_adaptive_cycles = N`, each cycle `c = 0 … N-1` produces:
 
 | File | Contents |
 | --- | --- |
-| `solution-c.vtk` | The computed solution, for ParaView or VisIt |
-| `A-global-cycle-c.coo` | The active system matrix $A$ |
-| `rhs-global-cycle-c.txt` | The active right-hand side $f$ |
-| `A-level-l-cycle-c.coo` | The multigrid level matrix $A_l$, for every level $l$ |
+| `solution-c.vtk` | The computed solution and the cell-wise error indicator, for ParaView or VisIt |
 | `mg-level-info-cycle-c.txt` | Per level: number of DoFs, matrix rows and stored nonzeros |
+| `A-global-cycle-c.coo` | The active system matrix $A$ — only with `--dump-matrices` |
+| `rhs-global-cycle-c.txt` | The active right-hand side $f$ — only with `--dump-matrices` |
+| `A-level-l-cycle-c.coo` | The multigrid level matrix $A_l$, for every level $l$ — only with `--dump-matrices` |
+
+The error indicators ride along in the VTK file as a second cell-wise field, so
+the pattern that drove the adaptive refinement can be inspected where it was
+decided.
+
+The `.coo` matrices and the right-hand side are off by default: an adaptively
+refined mesh produces one level matrix per level per cycle, which is a lot of
+megabytes. `mg-level-info-cycle-c.txt` is small and is always written, because it
+is the summary that says how the adaptive mesh turned into multigrid levels.
 
 The two custom formats are deliberately plain so that they can be loaded from
 MATLAB, Python or Julia:
@@ -246,15 +308,17 @@ right-hand side is the restricted residual, not an independently assembled $f_l$
 
 ## 7. Results
 
-The table below is the output of a cubic ($Q_3$) discretisation over four
-refinement cycles,
+### 7.1 Uniform refinement, as the baseline
+
+This is the special case `refine_fraction = 1` with the transfer switched off,
+which reproduces the uniform study the program was originally written around:
 
 ```bash
-docker run --rm laplace-beltrami 3 4
+./build/solver 3 0 4 1.0 0.0 --no-transfer
 ```
 
-which prints, for every cycle, the mesh size, the number of degrees of freedom,
-the number of CG iterations, and the error against the exact solution:
+It prints, for every cycle, the mesh size, the number of degrees of freedom, the
+number of CG iterations, and the error against the exact solution:
 
 | Cycle | Cells | Levels | DoFs | CG iterations | $H^1$ error | $L^2$ error | $L^\infty$ error |
 | ----: | ----: | -----: | ---: | ------------: | ----------: | ----------: | ---------------: |
@@ -288,6 +352,46 @@ size, which is the property a geometric multigrid preconditioner is supposed to
 have. (Cycle 0 has only a single level, so its coarse solve is exact and CG
 terminates in one step.)
 
+### 7.2 Adaptive refinement
+
+The default run,
+
+```bash
+./build/solver            # degree 3, 2 initial refinements, 4 adaptive cycles
+```
+
+starts from a 256-cell mesh and refines the 30 % of cells with the largest error
+indicator in each cycle:
+
+| Cycle | Cells | Levels | DoFs | CG iterations | $H^1$ error | $L^2$ error | $H^1$ rate |
+| ----: | ----: | -----: | ---: | ------------: | ----------: | ----------: | ---------: |
+| 0 | 256 | 3 | 2304 | 13 | 1.035e-03 | 7.225e-05 | — |
+| 1 | 496 | 4 | 4744 | 9 | 5.172e-04 | 3.069e-05 | 0.96 |
+| 2 | 952 | 5 | 9044 | 10 | 1.582e-04 | 6.510e-06 | 1.84 |
+| 3 | 1816 | 5 | 17128 | 9 | 7.984e-05 | 2.673e-06 | 1.07 |
+
+The cell counts are not round numbers, because refining a cell forces its
+neighbours along to keep the mesh one-irregular — that is
+`limit_level_difference_at_vertices` doing its work.
+
+**Mesh independence survives adaptivity.** The number of unknowns grows 7.4-fold
+across the adaptive cycles, from 2304 to 17128, while the CG iteration count stays
+between 9 and 13. Mesh independence is a property of the *hierarchy*, not of
+uniform refinement: on a non-uniform mesh the level interface matrices stop being
+empty, and the V-cycle only stays efficient because they are assembled and passed
+to `Multigrid::set_edge_matrices()`. Removing that one call is enough to lose the
+property.
+
+**But adaptive refinement has little to exploit here.** The manufactured solution
+$u = \sin\xi\sin\eta$ is smooth, so its error is spread evenly over the torus and
+there is no localised feature to chase. The Kelly estimator therefore marks a
+diffuse set of cells and the mesh stays close to uniform, which is why the
+observed $H^1$ rates (0.96, 1.84, 1.07) are noisier and no better than the clean
+$h$-rates of the uniform baseline — the numbers are measured against a growing
+unknown count on a mesh that is not quasi-uniform in a controlled way. Adaptive
+refinement earns its keep on solutions with localised structure; on this problem
+it is a fair test of the *machinery*, not of the payoff.
+
 ---
 
 ## 8. Code layout
@@ -295,20 +399,50 @@ terminates in one step.)
 Everything lives in `src/main.cpp`, in namespace `LaplaceBeltrami`, and is
 organised in numbered sections:
 
-1. **The problem** — torus geometry (`TorusGeometry`): the angle coordinates,
+1. **Parameters** — the `Parameters` struct and `parse_command_line()`: every
+   knob in one place.
+2. **The problem** — torus geometry (`TorusGeometry`): the angle coordinates,
    the scale factors and $\kappa$.
-2. **Exact solution** — `ExactSolution<3>`, including its surface gradient.
-3. **Right-hand side** — `RightHandSide<3>`, the analytic $f$.
-4. **Scratch and copy data** — `ScratchData` and `CopyData` for the mesh loop.
-5. **The problem class** — `LaplaceBeltramiProblem<dim, spacedim>`, plus the
-   preconditioner selector.
-6. **DoFs and matrix structures** — `setup_system()`.
-7. **Cell worker** — the local integrals, shared by the active and level assembly.
-8. **Assembly** — `assemble_system()` and `assemble_multigrid()`.
-9. **Solution** — `solve()` and the three preconditioned CG variants.
-10. **Error** — `compute_error()`.
-11. **Output** — `output_results()`, including the matrix and vector dumps.
-12. **Driver** — `run()`, and `main()` at the bottom.
+3. **Exact solution** — `ExactSolution<3>`, including its surface gradient.
+4. **Right-hand side** — `RightHandSide<3>`, the analytic $f$.
+5. **Scratch and copy data** — `ScratchData` and `CopyData` for the mesh loop.
+6. **The problem class** — `LaplaceBeltramiProblem<dim, spacedim>`.
+7. **The mesh** — `make_grid()`, `refine_mesh()` and `describe_mesh()`: the
+   adaptivity driver.
+8. **DoFs and matrix structures** — `setup_system()`.
+9. **Cell worker** — the local integrals, shared by the active and level assembly.
+10. **Assembly** — `assemble_system()` and `assemble_multigrid()`.
+11. **Error estimation** — `estimate_error()`, the Kelly estimator.
+12. **Solution** — `solve()` and the three preconditioned CG variants.
+13. **Post-processing** — `compute_error()`, `record_convergence()` and
+    `write_convergence_table()`.
+14. **Output** — `output_results()`, including the optional matrix dumps.
+15. **Driver** — `run()`, and `main()` at the bottom.
+
+The cycle in `run()` is worth reading in order, because the adaptivity is driven
+by state that crosses cycle boundaries:
+
+```cpp
+make_grid();
+for (cycle ...)
+  {
+    if (cycle > 0) refine_mesh();   // consumes the indicators of the previous cycle
+    setup_system();
+    if (solution_transfer) { solution_transfer->interpolate(solution); ... }
+    assemble_system();
+    assemble_multigrid();
+    solve();
+    estimate_error();               // produces the indicators for the next cycle
+    compute_error();
+    record_convergence(cycle);
+    output_results(cycle);
+  }
+```
+
+`error_indicators` is written at the end of a cycle and read at the start of the
+next one, so it has to be a member rather than a local. `refine_mesh()` runs
+before `setup_system()` so that the interpolation happens once the new degrees of
+freedom and constraints exist.
 
 ---
 
@@ -318,6 +452,10 @@ The surface finite element method and the surrounding deal.II machinery are
 described in:
 
 - deal.II tutorial **step-38** — *Solving PDEs on curved surfaces*
+- deal.II tutorial **step-6** — *Adaptive mesh refinement*, for the Kelly
+  estimator and the mark-and-refine loop
+- deal.II tutorial **step-16** — *Multigrid on adaptively refined meshes*, for
+  the level interface matrices and the symmetric V-cycle
 - deal.II documentation on [multigrid](https://www.dealii.org/current/doxygen/deal.II/group__mg.html)
 
 ---
