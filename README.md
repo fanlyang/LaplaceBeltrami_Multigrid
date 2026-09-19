@@ -173,6 +173,11 @@ image is a deal.II 9.7.1 build that additionally instantiates them for
 is the supported way to build this code, which is why it is the default in
 `CMakeLists.txt`.
 
+The adaptive refinement adds a second requirement on that build: it uses
+`KellyErrorEstimator<2, 3>` and `SolutionTransfer<2, 3, Vector<double>>`, which
+the codim build also provides. Both were checked to compile, link and run before
+they were relied on.
+
 > **Note.** The published `fanyoung/dealii-codim:9.7.1` tag is a `linux/arm64`
 > image. On an x86_64 machine Docker Desktop runs it under emulation: it works,
 > but the build and the runs are several times slower than native.
@@ -181,8 +186,9 @@ is the supported way to build this code, which is why it is the default in
 
 ```bash
 docker build -t laplace-beltrami .
-docker run --rm laplace-beltrami            # degree 3, 5 refinement cycles
-docker run --rm laplace-beltrami 4 4        # degree 4, 4 refinement cycles
+docker run --rm laplace-beltrami             # the default adaptive run
+docker run --rm laplace-beltrami 4 2 4       # degree 4, 2 initial, 4 adaptive cycles
+docker run --rm laplace-beltrami 3 0 4 1.0 0.0   # uniform refinement
 ```
 
 Output files are written into the working directory. To get them out of the
@@ -190,7 +196,7 @@ container, mount a host directory and run there:
 
 ```bash
 mkdir -p out
-docker run --rm -v "$PWD/out:/work" -w /work laplace-beltrami 3 5
+docker run --rm -v "$PWD/out:/work" -w /work laplace-beltrami 3 2 4
 ```
 
 ### Option B — A local deal.II installation
