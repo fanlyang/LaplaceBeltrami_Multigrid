@@ -22,6 +22,9 @@ solver.exe
 
 # Solver output: matrices, vectors and level statistics
 *.coo
+dof-coords-*.txt
+coeff-*.txt
+refinement-edge-*.txt
 
 # Local backups
 *.orig

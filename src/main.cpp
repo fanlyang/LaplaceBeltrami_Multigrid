@@ -10,6 +10,7 @@
  * ------------------------------------------------------------------------ */
 
 #include <deal.II/base/function.h>
+#include <deal.II/base/geometry_info.h>
 #include <deal.II/base/memory_consumption.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
@@ -524,6 +525,13 @@ namespace LaplaceBeltrami
     // -- post-processing ---------------------------------------------
     Errors compute_error() const;
     void   output_results(const unsigned int cycle) const;
+
+    // Write the per-level data the learned smoother is trained on: the
+    // physical coordinates of the level degrees of freedom (in the same
+    // ordering as mg_matrices[level]), the coefficient sampled at those
+    // points, the refinement-edge indices, and the prolongation from the
+    // next-coarser level.
+    void export_level_data(const unsigned int cycle) const;
 
     // Accounted-for memory of the deal.II objects, in megabytes.
     double algebraic_memory_mb() const;
@@ -1390,9 +1398,179 @@ namespace LaplaceBeltrami
            << mg_matrices[level].n_nonzero_elements() << "\n";
 
 
+    // -- 5. per-level data for the learned smoother -------------------
+    export_level_data(cycle);
+
+
     std::cout << "   Analysis output: " << global_A << ", " << global_f << ", "
-              << "A-level-*-cycle-" << cycle << ".coo, " << info_name
-              << std::endl;
+              << "A-level-*-cycle-" << cycle << ".coo, " << info_name << ", "
+              << "dof-coords/coeff/refinement-edge/P per level" << std::endl;
+  }
+
+
+  /* ==================================================================
+   *
+   * 11b. Level data for the learned smoother
+   *
+   * Training the residual-to-correction network needs, for one fixed level,
+   * the level operator A_l, the physical coordinates of the level degrees
+   * of freedom in the same ordering as A_l, the coefficient sampled at
+   * those coordinates, the refinement-edge (constrained) degrees of freedom,
+   * and the prolongation from the next coarser level. The level operator is
+   * already written by output_results(); this function writes the rest.
+   *
+   * ================================================================== */
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::export_level_data(
+    const unsigned int cycle) const
+  {
+    const unsigned int n_levels  = triangulation.n_levels();
+    const std::string  cycle_str = std::to_string(cycle);
+
+    // -- physical support points of the level degrees of freedom -------
+    //
+    // For Q^p elements the support points are the mapped tensor-product
+    // Gauss-Lobatto nodes, and evaluating the mapping there gives the
+    // location the i-th local degree of freedom lives at. Iterating over
+    // the level cells (not the active cells) assigns the points in the
+    // level numbering that A_l uses.
+    std::vector<std::vector<Point<spacedim>>> support_points(n_levels);
+    for (unsigned int level = 0; level < n_levels; ++level)
+      support_points[level].resize(dof_handler.n_dofs(level));
+
+    {
+      const Quadrature<dim> support_quadrature(fe.get_unit_support_points());
+      FEValues<dim, spacedim> fe_values(mapping, fe, support_quadrature,
+                                        update_quadrature_points);
+
+      const unsigned int dofs_per_cell = fe_values.get_fe().n_dofs_per_cell();
+      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+
+      for (unsigned int level = 0; level < n_levels; ++level)
+        for (const auto &cell : dof_handler.cell_iterators_on_level(level))
+          {
+            fe_values.reinit(cell);
+            cell->get_mg_dof_indices(local_dof_indices);
+
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              support_points[level][local_dof_indices[i]] =
+                fe_values.quadrature_point(i);
+          }
+    }
+
+    for (unsigned int level = 0; level < n_levels; ++level)
+      {
+        const std::string tag =
+          "level-" + std::to_string(level) + "-cycle-" + cycle_str;
+
+        // (a) coordinates of the support points --------------------------
+        {
+          std::ofstream out("dof-coords-" + tag + ".txt");
+          AssertThrow(out, ExcMessage("Could not open dof-coords-" + tag));
+          out << std::setprecision(17) << std::scientific;
+          out << support_points[level].size() << "\n";
+          for (const Point<spacedim> &p : support_points[level])
+            {
+              for (unsigned int d = 0; d < spacedim; ++d)
+                out << (d == 0 ? "" : " ") << p[d];
+              out << "\n";
+            }
+        }
+
+        // (b) coefficient sampled at the same points ----------------------
+        {
+          std::ofstream out("coeff-" + tag + ".txt");
+          AssertThrow(out, ExcMessage("Could not open coeff-" + tag));
+          out << std::setprecision(17) << std::scientific;
+          out << support_points[level].size() << "\n";
+          for (const Point<spacedim> &p : support_points[level])
+            {
+              const TorusGeometry::Angles a = TorusGeometry::angles_of(p);
+              out << TorusGeometry::kappa(a.xi, a.eta) << "\n";
+            }
+        }
+
+        // (c) refinement-edge degrees of freedom --------------------------
+        //
+        // On a uniformly refined mesh this set is empty. It is written
+        // anyway so that the same reader works on adaptively refined meshes,
+        // where these entries must be constrained to zero in the smoother.
+        {
+          std::vector<types::global_dof_index> edge_dofs;
+          for (const types::global_dof_index dof_index :
+               mg_constrained_dofs.get_refinement_edge_indices(level))
+            edge_dofs.push_back(dof_index);
+
+          std::ofstream out("refinement-edge-" + tag + ".txt");
+          AssertThrow(out, ExcMessage("Could not open refinement-edge-" + tag));
+          out << edge_dofs.size() << "\n";
+          for (const types::global_dof_index i : edge_dofs)
+            out << i << "\n";
+        }
+
+        // (d) prolongation from level-1 to level --------------------------
+        if (level > 0)
+          {
+            const unsigned int coarse        = level - 1;
+            const unsigned int n_fine        = dof_handler.n_dofs(level);
+            const unsigned int n_coarse      = dof_handler.n_dofs(coarse);
+            const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+
+            std::vector<types::global_dof_index> fine_dofs(dofs_per_cell);
+            std::vector<types::global_dof_index> coarse_dofs(dofs_per_cell);
+
+            DynamicSparsityPattern dsp(n_fine, n_coarse);
+
+            for (const auto &parent :
+                 dof_handler.cell_iterators_on_level(coarse))
+              for (unsigned int child_index = 0;
+                   child_index < parent->n_children(); ++child_index)
+                {
+                  const auto child = parent->child(child_index);
+                  parent->get_mg_dof_indices(coarse_dofs);
+                  child->get_mg_dof_indices(fine_dofs);
+
+                  const FullMatrix<double> &P_cell = fe.get_prolongation_matrix(
+                    child_index, RefinementCase<dim>::isotropic_refinement);
+
+                  for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                      if (P_cell(i, j) != 0.0)
+                        dsp.add(fine_dofs[i], coarse_dofs[j]);
+                }
+
+            SparsityPattern      sp;
+            SparseMatrix<double> prolongation;
+            sp.copy_from(dsp);
+            prolongation.reinit(sp);
+
+            // A degree of freedom shared by two children of the same parent
+            // is visited once per child, and set() is idempotent, so the
+            // shared entries are written with their single correct value
+            // rather than summed twice.
+            for (const auto &parent :
+                 dof_handler.cell_iterators_on_level(coarse))
+              for (unsigned int child_index = 0;
+                   child_index < parent->n_children(); ++child_index)
+                {
+                  const auto child = parent->child(child_index);
+                  parent->get_mg_dof_indices(coarse_dofs);
+                  child->get_mg_dof_indices(fine_dofs);
+
+                  const FullMatrix<double> &P_cell = fe.get_prolongation_matrix(
+                    child_index, RefinementCase<dim>::isotropic_refinement);
+
+                  for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                      if (P_cell(i, j) != 0.0)
+                        prolongation.set(fine_dofs[i], coarse_dofs[j],
+                                         P_cell(i, j));
+                }
+
+            write_sparse_matrix(prolongation, "P-" + tag + ".coo");
+          }
+      }
   }
 
 
