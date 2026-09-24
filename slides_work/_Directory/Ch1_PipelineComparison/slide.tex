@@ -1,0 +1,33 @@
+\frametitle{The Same Four Questions, Two Pipelines}
+\small
+
+The two pipelines are not two different subjects. They are two ways of
+answering the same four questions.
+
+\vspace{0.4em}
+{\centering
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{@{}p{4.6cm} p{9.4cm} p{9.4cm}@{}}
+\rowcolor{black!6}
+\textbf{The question} & \textbf{Classical pipeline} & \textbf{Neural-operator pipeline}\\
+\hline
+Can I solve it?
+  & Sparse linear system, solved iteratively
+  & One forward pass of the trained operator $\mathcal{G}_\theta$\\
+Can I measure the error?
+  & \alert{A posteriori} estimator, computable cell by cell
+  & Training and validation loss, measured once, offline\\
+Can I speed it up?
+  & \alert{Optimal complexity} by multigrid; adaptive refinement
+  & Amortised --- no solve is performed at inference time\\
+Have I used every effort?
+  & The smoother is the \alert{least automatic} component
+  & \alert{Learn the smoother}; keep the multilevel structure\\
+\end{tabular}\par}
+
+\vspace{0.4em}
+\begin{block}{What the comparison is for}
+The learned route is not asked to replace the classical one. It is asked to
+answer \alert{one} of the four questions --- the last --- better than a fixed
+smoother can, while the other three keep their classical answers.
+\end{block}

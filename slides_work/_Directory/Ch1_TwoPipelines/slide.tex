@@ -1,0 +1,41 @@
+\frametitle{Classical Solvers vs.\ Neural Operators}
+\small
+\centering
+
+\begin{tikzpicture}[
+    box/.style={draw, rounded corners=2pt, align=center, font=\small,
+                inner sep=6pt, text width=70mm},
+    cls/.style={box, fill=blue!8,  draw=blue!45},
+    lrn/.style={box, fill=orange!12, draw=orange!60},
+    ar/.style={-{Latex[length=2mm]}, line width=0.7pt, draw=black!65},
+  ]
+
+  % ---------------- the two columns of boxes ----------------
+  \node[cls] (a1) at ( 0.0,0) {PDE};
+  \node[lrn] (b1) at ( 8.8,0) {PDE};
+
+  \node[cls, below=8mm of a1] (a2) {Discretisation\\ FEM / FDM / DG};
+  \node[cls, below=8mm of a2] (a3) {$Au=f$\\ sparse linear system};
+  \node[cls, below=8mm of a3] (a4) {Solver\\ MG / CG / DG};
+
+  \node[lrn, below=8mm of b1] (b2) {Training data\\ $(f,u)$};
+  \node[lrn, below=8mm of b2] (b3) {Learn the operator\\ $\mathcal{G}_\theta: f \mapsto u$};
+  \node[lrn, below=8mm of b3] (b4) {Prediction\\ $u \approx \mathcal{G}_\theta(f)$};
+
+  % ---------------- headers, centred over their own column ----------------
+  \node[font=\small\bfseries, text=blue!55!black,   above=7mm of a1]
+       {Classical pipeline};
+  \node[font=\small\bfseries, text=orange!75!black, above=7mm of b1]
+       {Neural-operator pipeline};
+
+  \foreach \i/\j in {a1/a2, a2/a3, a3/a4, b1/b2, b2/b3, b3/b4}
+     \draw[ar] (\i) -- (\j);
+\end{tikzpicture}
+
+\vspace{0.5em}
+\begin{block}{The comparison this talk makes}
+Both pipelines are asked the \alert{same four questions}. They differ not in
+what has to be answered, but in \alert{how} it can be answered --- and this
+thesis does not choose between them. It keeps the multilevel structure and
+learns \alert{one node} of it: the smoothing step.
+\end{block}

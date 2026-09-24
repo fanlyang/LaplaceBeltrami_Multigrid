@@ -1,0 +1,60 @@
+\frametitle{Motivation: PDEs on Curved Surfaces}
+\small
+
+\begin{columns}[T]
+
+%=====================================================================
+% left: what the problem is, and the two demands it makes
+%=====================================================================
+\begin{column}{0.47\textwidth}
+\textbf{The problem}
+
+Surfaces and complex geometries are the rule, not the exception: biological
+membranes, vascular networks, thin shells, material interfaces.
+
+\vspace{0.5em}
+\textbf{Two demands, and they compete}
+
+\begin{itemize}
+  \item \alert{Geometry}. The discretisation must represent the surface
+        faithfully; a geometry that is only approximately right poisons every
+        step that follows it.
+  \item \alert{Scale}. The resulting systems are large and sparse. A solver
+        whose cost grows faster than the number of unknowns is unusable,
+        however accurate the discretisation.
+\end{itemize}
+\end{column}
+
+%=====================================================================
+% right: the classical answer
+%=====================================================================
+\begin{column}{0.53\textwidth}
+\textbf{The classical answer}
+
+\begin{block}{Two ingredients}
+\alert{Finite elements} supply the geometry; \alert{multigrid} supplies the
+solver.
+\end{block}
+
+Multigrid exploits the \alert{separation of scales} in the error:
+
+\begin{itemize}
+  \item a \emph{smoothing} iteration removes the oscillatory part;
+  \item a \emph{coarse-grid correction} removes the smooth part that the
+        smoother cannot reach.
+\end{itemize}
+
+Applied recursively over a mesh hierarchy this reaches \alert{optimal
+complexity}: the work to reduce the residual by a fixed factor is proportional
+to the number of unknowns.
+\end{column}
+
+\end{columns}
+
+\begin{block}{Where it becomes difficult}
+The efficiency depends on the \emph{design} of the components --- smoother,
+restriction and prolongation, coarse-grid strategy. With a \alert{variable
+coefficient}, on \alert{adaptively refined meshes}, or where the geometry is
+known only through a \alert{point cloud}, keeping convergence uniform is hard,
+and the performance of a classical cycle degrades substantially.
+\end{block}
