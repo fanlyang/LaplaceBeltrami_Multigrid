@@ -274,6 +274,7 @@ Mean `||e - delta_e||_A / ||e||_A` after **one** application (lower is better):
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | **DeepONet + Jacobi skip** | trig | 128 | 230 k | **0.3856** | **0.1968** | 0.3969 | **0.5019** | 0.4305 |
 | DeepONet | trig | 1024 | 461 k | 0.7655 | 0.2952 | 0.9683 | 0.6940 | 1.0108 |
+| DeepONet | fourier-16 | 1024 | 739 k | 0.7616 | 0.4739 | 0.8786 | 0.6877 | 0.9369 |
 | DeepONet (literal spec: raw coords) | xyz | 64 | 214 k | 0.7765 | 0.3679 | 0.9729 | 0.6685 | 1.0150 |
 | damped Jacobi, best omega | — | — | — | 0.6433 | 0.9320 | 0.4375 | 0.8465 | 0.4103 |
 | Gauss–Seidel | — | — | — | 0.5729 | 0.8563 | 0.3889 | 0.7533 | 0.3368 |
@@ -300,6 +301,16 @@ coordinates, `p = 64`) and the wider smooth trunk (`trig`, `p = 1024`), with six
 times the parameters — do **not** beat the classical smoothers overall, for the
 same reason: they too cannot touch the high-dimensional part. Note they are not
 useless: both beat symmetric Gauss–Seidel on `smooth`, substantially.
+
+Adding Fourier features out to the Nyquist limit (`fourier-16`, same `p = 1024`)
+does move the mechanisms the frequency argument predicts — `multiscale` 0.9683 ->
+0.8786 and `algebraic` 1.0108 -> 0.9369 — but it makes `smooth` distinctly
+*worse*, 0.2952 -> 0.4739. That is the rank budget being spent differently rather
+than more cleverly: the trunk has the same `p` dimensions either way, so widening
+its frequency coverage dilutes how well it can represent any one part of the
+spectrum. Widening the reachable subspace and deepening it are not the same
+thing, and with `p` fixed they trade against each other. It still does not beat
+the classical smoothers overall (0.7616 against 0.4297).
 
 The mechanism is visible in `plots/error_fields_localized.png`. For the plain
 design the localised bump survives almost untouched while the correction is a
@@ -331,13 +342,46 @@ damped Jacobi below it — a fixed-length branch cannot act at another DoF count
 
 **The hybrid cycle beats an all-classical cycle**, 0.1084 against 0.1753, which is
 the claim that actually matters for multigrid: replacing one node of the cycle
-improves the cycle. The two plain designs do the opposite — their V-cycles
-measured 0.4283 (`xyz`, p=64) and 0.4218 (`trig`, p=1024), i.e. *worse* than
+improves the cycle. The two plain designs do the opposite — their V-cycles measured 0.4283 (`xyz`, p=64) and 0.4218 (`trig`, p=1024), and 0.4719 (`fourier-16`), i.e. *worse* than
 Jacobi everywhere. Substituting a smoother that cannot damp high-dimensional
 error for one that can makes the whole cycle worse, and the V-cycle measurement
 is what exposes it.
 
-### 8.3 Caveat on these numbers
+### 8.3 Scaling: level 4 — 4096 DoFs, 64x64 lattice
+
+The winning configuration from 8.1 (trig trunk, Jacobi skip) re-run unchanged at
+level 4 except `p = 256`, 4000 epochs, 512 training samples:
+
+| method | ALL | smooth | multiscale | localized | algebraic |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DeepONet + Jacobi skip | 0.6409 | 0.9394 | 0.4543 | 0.8427 | 0.4249 |
+| damped Jacobi, best omega | 0.6433 | 0.9825 | 0.4426 | 0.8471 | 0.4066 |
+| Gauss–Seidel | 0.5878 | 0.9567 | 0.4017 | 0.7525 | 0.3453 |
+| symmetric Gauss–Seidel | 0.4476 | 0.9169 | 0.2291 | 0.6178 | 0.1647 |
+
+Two-grid: DeepONet 0.2491, damped Jacobi 0.2491, symmetric Gauss–Seidel 0.1372.
+V-cycle: learned @ L4 **0.1755** against damped Jacobi everywhere 0.1751.
+
+**The design does not transfer to level 4 on the same budget, and the evidence
+says why.** Its two-grid reduction is identical to damped Jacobi's to four
+decimals (0.2491 in both), the V-cycle is a tie (0.1755 against 0.1751), and the
+learned skip coefficient settled at `omega = 0.7080` — essentially the best swept
+Jacobi value of 0.7. The network learned to reproduce an optimally damped Jacobi
+step and essentially nothing more: at level 4 the learned increment is
+negligible, which is why the DeepONet row sits on top of the Jacobi row on every
+mechanism.
+
+Two things changed at once and they point the same way. The rank ratio **halved**
+— `p/n = 0.0625` here against `0.125` at level 3 — so the trunk's span is a
+smaller fraction of the space it must cover; and the problem grew fourfold while
+the training budget did not (same 4000 epochs, batch 16 and 512 samples). This is
+the scaling consequence of the fixed-DoF scope measured rather than asserted: the
+configuration has to be re-tuned per level, and `p` should grow with `n_dof`
+rather than staying put. It is not evidence that the approach fails — the level-3
+result stands — but it is evidence that a single tuned configuration is not
+transferable, which is exactly what the fixed-length-branch caveat predicts.
+
+### 8.4 Caveat on these numbers
 
 The skip-connection run was **still improving at its final epoch** (validation
 0.2225 at epoch 6000, best epoch 6000, curve monotonically decreasing and not

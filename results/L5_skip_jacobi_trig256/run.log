@@ -48,3 +48,4 @@ copy of one -- can appear in two splits.
 Model: DeepONet, branch 16384 -> 256, trunk 4 -> 256, depth 3
   parameters 2229377 | dtype float64 | threads 4 | trunk trig
   epoch      0  train 0.306646  val 0.298674  lr 1.00e-03
+  epoch    750  train 0.351963  val 0.294191  lr 1.00e-03

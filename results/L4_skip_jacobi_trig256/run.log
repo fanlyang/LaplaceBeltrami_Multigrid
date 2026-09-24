@@ -46,3 +46,30 @@ copy of one -- can appear in two splits.
 
 Model: DeepONet, branch 4096 -> 256, trunk 4 -> 256, depth 3
   parameters 656513 | dtype float64 | threads 4 | trunk trig
+  training 1150.8 s (best epoch 2000, val 0.301943)
+  learned diagonal skip: omega = 0.70798 (initial 0.66667)
+
+Classical smoother reference: best damped Jacobi omega = 0.700 (mean ratio 0.64334)
+  omega sweep: {0.4: 0.73721, 0.5: 0.68785, 0.6: 0.65501, 0.6666666666666666: 0.6449, 0.7: 0.64334, 0.8: 0.65111, 0.9: 0.67413}
+
+Mean A-energy reduction over the test set, ||e - de||_A / ||e||_A:
+  method               ALL      smooth   multiscale  localized  algebraic
+  DeepONet             0.6409   0.9394   0.4543      0.8427     0.4249  
+  damped Jacobi        0.6433   0.9825   0.4426      0.8471     0.4066  
+  Gauss-Seidel         0.5878   0.9567   0.4017      0.7525     0.3453  
+  sym. Gauss-Seidel    0.4476   0.9169   0.2291      0.6178     0.1647  
+  SSOR                 0.4476   0.9169   0.2291      0.6178     0.1647  
+
+Two-grid analysis with the REAL P and coarse operator from the exported hierarchy:
+  smoother DeepONet           only 0.6409 | coarse only 0.5616 | two-grid 0.2491
+  smoother damped Jacobi      only 0.6433 | coarse only 0.5616 | two-grid 0.2491
+  smoother sym. Gauss-Seidel  only 0.4476 | coarse only 0.5616 | two-grid 0.1372
+
+V-cycle over 5 exported levels. The learned smoother acts at level 4
+only; coarser levels use damped Jacobi, because a fixed-length branch
+cannot be applied at another DoF count or ordering.
+  learned@L4 + Jacobi below          mean 0.1755  [0.0803, 0.2628]
+  damped Jacobi everywhere           mean 0.1751  [0.0797, 0.2629]
+
+Wrote results/L4_skip_jacobi_trig256/{metrics.json,history.csv,splits.json,best_model.pt,run.log,plots/}
+total wall clock: 1239.8 s
