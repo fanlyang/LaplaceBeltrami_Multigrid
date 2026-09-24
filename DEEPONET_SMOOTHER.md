@@ -1,0 +1,281 @@
+# DeepONet as a multigrid smoother — training and evaluation
+
+`deeponet_smoother.py` learns the residual-to-correction map
+
+```
+B_theta : r_h -> delta_e_h ,        r_h = A_h e_h
+```
+
+on one fixed multigrid level, so that the smoothing step
+
+```
+u_h <- u_h + B_theta(r_h)        equivalently        S_theta(e_h) = e_h - B_theta(A_h e_h)
+```
+
+reduces the *algebraic* error in the A_h energy norm `||v||_A^2 = v^T A_h v`. The
+reported quantity is the one that decides whether the network is an effective
+smoother: the per-sample ratio `||e_h - B_theta(A_h e_h)||_A / ||e_h||_A`.
+
+`A_h` comes from the deal.II surface (Laplace–Beltrami) solver in `src/main.cpp`,
+exported by `export_level_data` and converted by `tools/convert_level_data.py`.
+
+**Loss.** Exactly the relative energy error:
+
+```
+L(theta) = (1/N) * sum_i  ||e^[i] - B_theta(A e^[i])||_A^2 / ( ||e^[i]||_A^2 + eps )
+```
+
+computed with sparse matrix–vector products only; `A_h` is never densified.
+
+---
+
+## 1. Scope — what is and is not claimed
+
+This section is deliberate. The program prints it at startup and records it in
+`metrics.json` under `scope`.
+
+* The branch consumes a **fixed-length residual vector**, so the trained model is
+  bound to **one DoF count and one DoF ordering**. It is not a
+  discretisation-independent operator. **No cross-mesh or mesh-refinement
+  generalisation is claimed**, and none is measured. Using it at another level
+  means retraining; that is why coarser levels of the V-cycle are smoothed
+  classically.
+* The network does **not** learn the infinite-dimensional space `H^1(Gamma)`. It
+  learns a map on one finite element space `V_h`, from residual coefficient
+  vectors to correction coefficient vectors.
+* Errors are **not** partitioned into "high frequency" and "low frequency". The
+  generators produce smooth, multi-scale, localised and purely algebraic errors
+  and per-sample mixtures of them. Where a coarse-space object appears it is the
+  *`A_h`-orthogonal complement of `range(P)`* — a precisely defined subspace, not
+  a Fourier band.
+* Every `coeff_l2` figure is the Euclidean norm of a **coefficient vector** in
+  `R^n`. It is **not** the continuous `L^2(Gamma)` norm: that needs the mass
+  matrix `M_h`, which the exporter does not write. The exporter writes `A_l`, the
+  support points, kappa at those points, refinement edges and `P`. So the honest
+  label is used everywhere, and `metrics.json` records
+  `"mass_matrix_available": false`.
+
+---
+
+## 2. Install
+
+```
+python -m pip install -r requirements-deeponet.txt
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+The second command is separate because the PyTorch CPU index does not carry
+numpy/scipy/matplotlib. CPU-only torch is sufficient: nothing here needs a GPU,
+and `n_dof = 1024` trains in a few minutes.
+
+## 3. Generate the data
+
+The exporter writes plain `.coo`/`.txt` dumps; the converter turns them into
+`level_matrix.npz` + `dof_coordinates.npy`.
+
+```bash
+# build the exporter image (the published laplace-beltrami images predate
+# export_level_data, so the image must be rebuilt from this branch's src/main.cpp)
+docker build -t lb-exporter .
+
+# degree 1 = linear tent functions, 5 refinement cycles -> levels 0..4
+docker run --rm --entrypoint /home/dealii/solver/build/solver \
+    -v "$PWD/level_dumps:/work" -w /work lb-exporter 1 5
+
+# convert one consistent snapshot (cycle 4). level 3 = 1024 DoFs.
+for L in 0 1 2 3 4; do
+  python tools/convert_level_data.py --data-dir level_dumps --level $L \
+      --cycle 4 --out-dir level_data/L$L
+done
+```
+
+`level_data/L3` is a 32x32 periodic DoF lattice (1024 DoFs, 9216 nonzeros, 9 per
+row), `A` symmetric to exactly 0, Jacobi-scaled condition number 169, and
+prolongation `P: 1024 x 256`. `load_level()` verifies all of this at run time and
+refuses to continue on a non-symmetric or non-definite matrix rather than
+proceeding on an assumption.
+
+## 4. Run
+
+```bash
+python deeponet_smoother.py --data-dir level_data/L3 --out-dir results/L3 --vcycle
+```
+
+Useful arguments (full list: `--help`):
+
+| argument | meaning |
+| --- | --- |
+| `--data-dir` | converted level directory; the level index is read from its `L<n>` name |
+| `--hierarchy-root` | directory holding `L0..Ln` for the two-grid / V-cycle analysis |
+| `--p` | branch/trunk output width. **Bounds the rank of the correction** — see §6 |
+| `--trunk-features` | `xyz` \| `angles` \| `trig` \| `fourier` (with `--trunk-modes`) |
+| `--base-smoother jacobi` | adds a learnable diagonal skip, `delta_e = omega D^-1 r + B_theta(r)` |
+| `--coarse-loss-weight` | weight of the coarse-complement loss (needs `P`) |
+| `--vcycle` | run a real V-cycle from the exported hierarchy |
+| `--reuse-data` | reload `dataset_*.npz` instead of regenerating |
+| `--inspect-only`, `--gen-only` | stop after validation / data generation |
+
+A small smoke configuration, then the full matrix:
+
+```bash
+bash experiments/run_all.sh quick
+bash experiments/run_all.sh
+python tools/summarize_runs.py --glob 'results/*/metrics.json' --csv results/summary.csv
+```
+
+## 5. Output files
+
+Written to `--out-dir`:
+
+| file | contents |
+| --- | --- |
+| `metrics.json` | **everything measured**, plus full provenance: `A` and coordinate SHA-256, shapes, nnz, seeds, generator parameters, split audit, library versions, and the explicit `scope` block |
+| `history.csv` | per-logged-epoch train loss, validation energy, learning rate |
+| `splits.json` | per split: mechanism, discrete signature and generator parameters of every sample — the audit trail for the disjointness claim |
+| `best_model.pt` | `state_dict` + config + best epoch/validation value |
+| `run.log` | the complete console transcript |
+| `dataset_{train,val,test}.npz` | errors `E` (unit `A`-energy), residuals `R = A E`, mechanism labels, signatures, parameters |
+| `plots/loss_curves.png` | train/validation loss |
+| `plots/reduction_by_mechanism.png` | mean energy ratio per mechanism, all methods |
+| `plots/energy_reduction_hist.png` | distribution of the ratio, per mechanism |
+| `plots/error_fields_<mech>.png` | before / after / correction, in the `(xi, eta)` chart |
+
+## 6. Verification
+
+`tools/selftest.py` re-derives every quantity on the small levels with plain
+dense NumPy and compares it against the sparse implementation the experiments
+use, so a sign error, a transpose slip or a wrong normalisation cannot survive
+into a reported number:
+
+```
+python tools/selftest.py --hierarchy-root level_data
+```
+
+It checks, all passing:
+
+* the error is normalised to `e^T A e = 1` and the residual is exactly `A e`;
+* `energy_norm` against a dense `v^T A v` (max relative difference `4.4e-16`);
+* the loss invariants — `loss(no correction) = 1` exactly, `loss(perfect) = 0` up
+  to the deliberate `eps` guard, `loss(e/2) = 1/4`;
+* **each classical smoother against its own dense formula** — damped Jacobi,
+  `(D+L)^{-1} r`, `(D+U)^{-1} D (D+L)^{-1} r`, and SSOR at `omega = 1` equal to
+  symmetric Gauss-Seidel;
+* the two-grid stages against a dense solve,
+  `A_H d = P^T A e_smooth` and `e_smooth - P d`;
+* the V-cycle contracts monotonically (measured `0.190, 0.082, 0.044, 0.027, 0.017`);
+* **the rank bound of §7 Finding 1, measured independently**: an arbitrary
+  32-dimensional correction subspace captures `0.1295` of the error's
+  `A`-energy, against the predicted `p/n = 0.125`;
+* every generator produces finite, non-zero draws, and the multiscale wavenumber
+  cap is strictly below Nyquist.
+
+## 7. What the experiments established
+
+All numbers below are produced by `tools/summarize_runs.py` from the runs'
+`metrics.json`; nothing is transcribed by hand.
+
+**Data are verified, not assumed.** `A` is symmetric to exactly 0, SPD with
+Jacobi-scaled condition 169, `kappa in [1.1, 2.1]` matching
+`kappa = 1.1 + sin^2(xi) cos^2(eta)`, support-point radii in `[1, 3]` for
+`R = 2, r = 1`, and the split audit reports **0 cross-split signature overlaps**
+in every run — so no base function, nor a rescaled copy of one, appears in two
+splits.
+
+**Finding 1 — what the model can fix is set by the span of the trunk, not by the
+size of the trunk alone.** The DeepONet output is `b(r) . T(x)^T` with `T` of
+shape `(n, p)`, so `delta_e` always lies in the `p`-dimensional row space of the
+trunk, *independent of `r`*. The consequence is not simply "`p` must equal `n`",
+which is what a first reading suggests and what an earlier version of this note
+claimed; the model reduces exactly that part of the error whose energy lies in
+that subspace, so what matters is the **effective dimension of the error
+distribution** relative to the trunk's span:
+
+* For a genuinely high-dimensional (white) error the captured fraction really is
+  about `p/n`. `tools/selftest.py` measures this independently: an arbitrary
+  32-dimensional subspace captures `0.1295` of a random error's `A`-energy
+  against `p/n = 0.125`. That is why the `algebraic` mechanism is the one the
+  model cannot touch (measured 1.015, i.e. no reduction).
+* For a **smooth** error the energy is nearly low-dimensional, so a *much*
+  smaller `p` suffices. Measured: with `p = 64` against `n = 1024` — one
+  sixteenth of the DoFs, and the raw `xyz` coordinates as trunk input — the model
+  reduces smooth errors to **0.368**, better than symmetric Gauss–Seidel's
+  `0.744`. The rank bound costs nothing there because there is nothing
+  high-dimensional to represent.
+
+**Finding 2 — the trunk basis must contain the spatial frequencies of an
+oscillatory correction.** A trunk built on `sin/cos(xi), sin/cos(eta)` through an
+MLP has a *smooth* basis; a trunk built on the raw coordinates has the same
+property in a different guise. Either way it can only produce smooth corrections,
+which is the opposite of what a smoother must do, since removing oscillatory
+error is the smoother's entire job. Measured with the localised mechanism, the
+before/after error plot shows the sharp bump essentially untouched while the
+correction `delta_e` is a smooth ripple spread over the whole domain. Adding
+Fourier features (`--trunk-features fourier`) widens the reachable subspace and
+the comparison table below shows what that buys.
+
+**Finding 3 — the hierarchy is not exactly Galerkin, and that matters.** The
+program compares `P^T A_l P` against the separately assembled `A_{l-1}` at every
+level and reports the relative difference. It is *not* zero (order `1e-3` here).
+This is expected for an isoparametric surface discretisation — a coarse basis
+function is not reproduced exactly by the fine cells' mappings — but it has a
+concrete consequence: for the coarse-complement loss to be a true `A`-orthogonal
+projection, `Q` must be built from `P^T A P`; the measured discrepancy is why the
+loss does that while the two-grid step uses the assembled `A_H` (which is what an
+actual multigrid cycle uses). A large discrepancy would mean `P` is not the
+transfer the hierarchy was assembled with, and would invalidate every coarse-grid
+claim built on it.
+
+**Finding 4 — the V-cycle must be written in correction form.** An
+error-propagation formulation is equivalent in exact arithmetic but easy to get
+wrong: handing `P^T r` to the coarse level as if it were an *error* silently
+omits the coarse solve, and the cycle then **diverges** (measured reduction
+2.2–3.8, i.e. > 1). `vcycle_apply` therefore solves for the correction directly
+(`x <- x + S(r - A x)`, coarse level receives the restricted residual and returns
+a correction). It converges: measured per-cycle reduction ≈ 0.209 with damped
+Jacobi at every level.
+
+**Finding 5 — DoFs-per-side is not the Nyquist wavenumber.** The DoFs form a
+square lattice in the parameter plane, so `n_side = sqrt(n_dof)` and the largest
+representable wavenumber is `n_side / 2`. Conflating the two caps the generated
+multiscale wavenumbers at `0.75 * n_side` instead of `0.75 * n_side / 2`, which
+**aliases** everything above the true Nyquist: `cos(k xi)` sampled on the lattice
+is indistinguishable from `cos((n_side - k) xi)`, so the recorded generator
+parameters would describe a different function than the one actually sampled —
+silently corrupting the provenance the brief asks for. This was a real bug here,
+caught by `tools/selftest.py` (the first version of the generator reported a cap
+of 12 against a true Nyquist of 8 on the 16x16 level), and fixed; the check
+"multiscale cap is strictly below Nyquist" now guards it.
+
+## 8. Limitations, and what further exports would be needed
+
+Stated without qualification:
+
+* **No real multigrid-trajectory training data was available**, so the training
+  distribution is synthetic (the four generators plus mixtures). The program
+  supports real samples — point it at error vectors dumped from actual V-cycle
+  iterates — but none were on disk, and none is faked. The synthetic distribution
+  is therefore a *modelling choice*, not a measurement of what a real cycle
+  produces.
+* **`L^2(Gamma)` errors cannot be formed.** Only coefficient-space `l^2` is
+  reported. A mass matrix `M_h` (or cell areas and connectivity) would be needed.
+* **The V-cycle here is algebraic**, assembled from the exported per-level
+  matrices and prolongations. It is a genuine V-cycle over the real hierarchy,
+  but it is *not* the deal.II multigrid solver: no claim is made here about CG
+  iteration counts, or about the hybrid cycle as a solver or preconditioner. To
+  measure that, the run needs an outer Krylov solve, i.e. the deal.II `PreconditionMG`
+  path in `src/main.cpp` — a C++ experiment, not this script.
+* **This is a two-grid-level transfer only where `P` is exported.** The measured
+  two-grid reduction uses the real `P` and `A_H`; the coarse-space complement is
+  exact because it is built from `P^T A P`.
+* **Timing.** Training time is reported separately from inference. Jacobi is a
+  diagonal scaling and is batched; Gauss–Seidel and SSOR are sequential
+  triangular solves, so their per-sample cost is inherently serial and is
+  reported as such rather than silently normalised.
+
+## 9. Relationship to `train_deeponet_smoother.py`
+
+The earlier prototype is superseded. It built `A = torch.tensor(A_sp.toarray())`
+— densifying the level operator, which makes it unusable beyond a few thousand
+DoFs — trained only on white-noise errors, had no train/validation/test
+discipline, and contained the error-propagation V-cycle bug of Finding 4. It is
+left in place for reference; use `deeponet_smoother.py`.

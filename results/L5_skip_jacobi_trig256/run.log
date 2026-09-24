@@ -1,0 +1,6 @@
+============================================================================
+DeepONet smoother -- surface (Laplace-Beltrami) multigrid level
+============================================================================
+SCOPE: the branch consumes a fixed-length residual, so this model is bound
+       to ONE DoF count and ONE DoF ordering -- no cross-mesh claim is made.
+       Coefficient-space l^2 is NOT L^2(Gamma): no mass matrix is exported.
