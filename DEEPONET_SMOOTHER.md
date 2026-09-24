@@ -282,7 +282,9 @@ Mean `||e - delta_e||_A / ||e||_A` after **one** application (lower is better):
 
 SSOR at `omega = 1` is algebraically symmetric Gauss–Seidel, which is why the two
 rows agree to every digit — a consistency check on the implementation, not a
-duplicate.
+duplicate. The four classical rows are also **identical across all three runs**
+(0.6433, 0.5729, 0.4297, 0.4297 in every one of them), which is the evidence
+that the three configurations really were scored on the same test errors.
 
 **The learned smoother with the diagonal skip beats every classical smoother
 overall** (0.3856 against 0.4297 for symmetric Gauss–Seidel), and it wins
@@ -298,6 +300,16 @@ coordinates, `p = 64`) and the wider smooth trunk (`trig`, `p = 1024`), with six
 times the parameters — do **not** beat the classical smoothers overall, for the
 same reason: they too cannot touch the high-dimensional part. Note they are not
 useless: both beat symmetric Gauss–Seidel on `smooth`, substantially.
+
+The mechanism is visible in `plots/error_fields_localized.png`. For the plain
+design the localised bump survives almost untouched while the correction is a
+low-amplitude smooth ripple spread over the whole domain — the model produces
+something it can represent rather than what is needed. With the skip connection
+the correction reproduces the bump's own shape and removes it (the peak falls
+from about 0.35 to about 0.05), which is what moves the `localized` column from
+0.6685 to 0.5019. A picture of the correction field is therefore worth as much as
+the aggregate number: it shows *what* the network learned, not just how much it
+helped.
 
 ### 8.2 Two-grid and V-cycle at level 3
 

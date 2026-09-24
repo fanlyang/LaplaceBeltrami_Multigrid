@@ -35,7 +35,9 @@ def describe(m, path):
         "trunk": name,
         "p": mod.get("p"),
         "params": mod.get("parameters"),
-        "log_points": tr.get("epochs_run"),
+        # log_points replaced an earlier, misleadingly named "epochs_run"
+        "log_points": tr.get("log_points", tr.get("epochs_run")),
+        "last_epoch": tr.get("last_epoch"),
         "best_epoch": tr.get("best_epoch"),
         "val_energy": tr.get("best_val_energy"),
         "n_dof": m.get("scope", {}).get("fixed_dof_count"),
@@ -71,11 +73,12 @@ def main():
     runs = [describe(load(p), p) for p in paths]
 
     print("# Run comparison\n")
-    print("| run | trunk | p | params | log pts | best epoch | val energy | train s |")
-    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| run | trunk | p | params | log pts | best epoch | last epoch | val energy | train s |")
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in runs:
-        print("| %s | %s | %s | %s | %s | %s | %.5f | %.0f |" % (
+        print("| %s | %s | %s | %s | %s | %s | %s | %.5f | %.0f |" % (
             r["run"], r["trunk"], r["p"], r["params"], r["log_points"], r["best_epoch"],
+            r["last_epoch"] if r["last_epoch"] is not None else "-",
             r["val_energy"], r["train_s"]))
 
     print("\n## Mean test energy ratio  ||e - de||_A / ||e||_A  (lower is better)\n")

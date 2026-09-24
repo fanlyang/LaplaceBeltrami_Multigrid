@@ -1401,6 +1401,7 @@ def main(argv=None):
             "refinement_edge_dofs": int(ld.edge.size) if ld.edge is not None else None,
             "kappa_range": [float(ld.coeff.min()), float(ld.coeff.max())] if ld.coeff is not None else None,
             "master_seed": args.seed,
+            "n_train": args.n_train, "n_val": args.n_val, "n_test": args.n_test,
             "train_mechanism": args.train_mechanism,
             "test_mechanisms": list(MECHANISMS) + ["mixed"],
             "nyquist_modes_per_direction": nyq,
@@ -1424,7 +1425,9 @@ def main(argv=None):
                       " and the skip vanishes at r=0" if args.base_smoother == "jacobi" else ""),
                   "output_rank_bound": "delta_e lies in the row space of the trunk, "
                                        "dimension <= p (%d) against n=%d" % (args.p, n_dof)},
-        "training": {"epochs_run": len(history), "best_epoch": best_epoch,
+        "training": {"log_points": len(history),
+                     "last_epoch": history[-1]["epoch"] if history else None,
+                     "best_epoch": best_epoch,
                      "best_val_energy": best_val, "train_seconds": train_seconds},
         "smoothers": per_mech,
         "jacobi_omega": {"best": jac_w, "sweep": jac_table},
