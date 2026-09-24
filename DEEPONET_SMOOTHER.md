@@ -399,6 +399,52 @@ flattened). These figures are therefore a lower bound on what that design
 achieves, not its converged performance. Training was not extended further
 because the point here is the comparison, not a tuned best.
 
+### 8.5 Why larger levels take so much longer
+
+`tools/profile_step.py` times each component of one optimisation step and reports
+the analytic operation counts, so the cost model is measured rather than
+guessed. Same configuration the experiments use:
+
+| level | n_dof | p | batch | params | MACs/step | trunk share | ms/step | memory held |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| L3 | 1 024 | 128 | 32 | 230 401 | 4.35e7 | 78.3 % | 61.1 | 24.0 MB |
+| L4 | 4 096 | 256 | 16 | 656 513 | 2.29e8 | 88.7 % | 196.5 | 60.1 MB |
+| L5 | 16 384 | 256 | 8 | 2 229 377 | 8.64e8 | **94.1 %** | 503.7 | 164.3 MB |
+
+L3 → L5: `n_dof` x16, params x9.7, FLOPs/step x19.9, wall-clock/step x8.2,
+memory x6.8. The raw output is committed as `results/profile_step.txt`.
+
+**The reason is the trunk, and it is a design consequence, not an accident.** The
+trunk is evaluated at *every DoF* to produce `T(x)`, so its cost is
+`O(n_dof * width * (features + width + p))` and — this is the part that matters —
+**it does not depend on the batch size at all**. At L5 the trunk is 94.1 % of the
+forward FLOPs; the branch, the only term that scales with the residual vector, is
+under 2 %. The practical consequence is that shrinking the batch cannot buy speed
+here: going from batch 32 at L3 to batch 8 at L5 cut the branch term by 4x, which
+is 2 % of the work. Every step still evaluates the trunk at all 16 384 DoFs
+whatever the batch.
+
+Three things follow, and they explain the observed runtime:
+
+* **Compute, not memory, is the binding constraint.** Memory grew 6.8x to 164 MB
+  — parameters 17 MB, Adam state 34 MB, gradients 17 MB, the trunk's `(n, p)`
+  output 32 MB, and 64 MB of `E`/`R` training data. 164 MB is unremarkable on any
+  current machine; the run never approached a memory limit. Reporting that plainly
+  matters, because "it needs more memory" is the intuitive explanation and it is
+  the wrong one.
+* **The step count does not fall with level.** The same ~3 000 epochs are needed,
+  so the per-step cost multiplies straight through: 3 000 x 0.48 s is about 24
+  minutes of pure step time before the evaluation phase.
+* **The trunk's input width is a first-order cost.** `--trunk-features trig` has 4
+  features; `fourier-16` has 2 176, so its trunk's first layer is 544x larger.
+  That is why the Fourier run was the slowest of the level-3 batch even though its
+  matrices were identical to the others — the same reason a richer trunk encoding
+  is not free.
+
+If this needed to be faster, the lever is the trunk, not the batch: evaluate it on
+a subset of DoFs, or replace the global coordinate trunk with a local one whose
+cost is `O(n_dof)` with a small constant instead of `O(n_dof * width * p)`.
+
 ## 9. Limitations, and what further exports would be needed
 
 Stated without qualification:
