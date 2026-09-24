@@ -34,9 +34,24 @@ Scope, stated once and precisely
 * Errors are **not** split into "high frequency" and "low frequency".  The
   generators produce smooth, multi-scale, localised and purely algebraic errors
   and per-sample mixtures of them, so a sample is usually not a pure member of
-  one class.  Where a coarse-space object appears (the coarse-complement loss and
-  the two-grid analysis) it is the *A_h-orthogonal complement of range(P)* -- a
-  precisely defined subspace, not a Fourier band.
+  one class.  Where a coarse-space object appears it is the *A_h-orthogonal
+  complement of range(P)* -- a precisely defined subspace, not a Fourier band.
+* The objective is ``L_CGC + lambda * L_E`` (``--loss-mode cgc``, the default):
+  the energy left after one smoothing step **and** one exact coarse-grid
+  correction, plus a weighted full-energy term.  ``L_CGC`` is what a two-grid
+  smoother exists to reduce, and it is what model selection follows.  The
+  denominator of both terms is ``||e||_A^2`` -- never ``||Q e||_A^2``, which
+  vanishes for errors in range(P).  Which coarse operator the loss contains is an
+  explicit choice (``--coarse-operator``): the **assembled** coarse matrix the
+  C++ V-cycle actually uses, or ``P^T A P``, for which the corrector is an exact
+  A_h-orthogonal projection.  On a curved surface these differ, the difference is
+  measured and reported, and the default is the operator that is really executed.
+* A small loss is not evidence of a working smoother on its own.  Evaluation
+  therefore reports the reduction per error mechanism *including the worst sample
+  and the share of samples that grew*, repeated application of the smoother, the
+  reduction after one and after several V-cycles, and the classical smoothers on
+  the same test set.  Where a number is only a smoothing result, it is labelled as
+  one.
 * Any ``coeff_l2``/``coeff_l2_ratio`` number here is the Euclidean norm of a
   **coefficient vector** in R^n.  It is **not** the continuous ``L^2(Gamma)``
   norm: that needs the mass matrix M_h, which the exporter does not write.  The
@@ -68,8 +83,10 @@ Quick start
 ``DEEPONET_SMOOTHER.md`` documents the arguments and every output file.
 
 This supersedes the ``train_deeponet_smoother.py`` prototype, which densified A_h
-with ``.toarray()`` (unusable beyond a few thousand DoFs) and trained on white
-noise only.
+with ``.toarray()`` (unusable beyond a few thousand DoFs), trained on white noise
+only, normalised its coarse-space term by a quantity that vanishes on range(P),
+and restricted with the prolongation in the wrong direction.  That file is kept as
+a thin compatibility entry point that forwards the old command line here.
 """
 
 from __future__ import annotations
@@ -343,6 +360,64 @@ def coeff_l2(v: torch.Tensor) -> torch.Tensor:
     return torch.sqrt((v * v).sum(dim=1))
 
 
+def coarse_operator_matrix(ld_fine: "LevelData", ld_coarse: Optional["LevelData"],
+                           mode: str):
+    """The coarse operator A_H that the LOSS will contain, as
+    ``(M, lam_min, lam_max)``.
+
+    ``galerkin``
+        ``P^T A_h P``, built from the exported fine operator and prolongation.
+        With this A_H the two-grid propagator is the exact A_h-orthogonal
+        projection onto the complement of range(P), which is what the theory
+        statement is about.
+
+    ``assembled``
+        Level ``l-1``'s own matrix, assembled by deal.II on the coarse mesh.  This
+        is the operator ``src/main.cpp`` puts into the V-cycle, so this is the
+        choice that makes the trained loss agree with the executed step.  The two
+        differ on a curved surface (see ``Hierarchy.galerkin_check``), and the
+        difference is reported rather than assumed away.
+
+    The result is symmetrised and its definiteness is verified sparsely before it
+    is returned; a non-SPD coarse operator is a hard error, not a warning.
+    """
+    if mode == "galerkin":
+        M = ld_fine.P.T @ ld_fine.A @ ld_fine.P
+    elif mode == "assembled":
+        if ld_coarse is None:
+            raise SystemExit("--coarse-operator assembled needs level l-1 on disk")
+        M = ld_coarse.A
+    else:
+        raise ValueError("unknown coarse operator %r" % mode)
+    M = sp.csr_matrix((M + M.T) * 0.5)
+    ok, lam_min, lam_max = sparse_spd_report(M.tocsc())
+    if not ok:
+        raise SystemExit("coarse operator (%s) is not positive definite" % mode)
+    return M, lam_min, lam_max
+
+
+def dense_cholesky_spd(M, dtype, max_dense: int, what: str):
+    """Cholesky factor of a SMALL SPD matrix, verified sparsely first.
+
+    The fine A_h is never densified -- that is the property this program promises
+    throughout.  The coarse operator is 16..4096 here, and a dense Cholesky factor
+    is what makes the coarse solve differentiable: torch has no sparse-LU
+    autograd, and the loss needs d/d(correction) through A_H^{-1}.  The size guard
+    turns "the machine ran out of memory" into a clear message.
+    """
+    n = M.shape[0]
+    if n > max_dense:
+        raise SystemExit(
+            "coarse operator %s is %d x %d, above --max-dense-coarse %d "
+            "(the differentiable coarse solve would need %.2f GB)"
+            % (what, n, n, max_dense, n * n * M.dtype.itemsize / 1e9))
+    ok, _, _ = sparse_spd_report(sp.csc_matrix(M))
+    if not ok:
+        raise SystemExit("coarse operator %s is not positive definite" % what)
+    dense = np.asarray(M.todense() if sp.issparse(M) else M)
+    return torch.linalg.cholesky(torch.from_numpy(dense).to(dtype))
+
+
 # ---------------------------------------------------------------------------
 # 3. Error generators
 # ---------------------------------------------------------------------------
@@ -588,6 +663,20 @@ class DeepONetSmoother(nn.Module):
     "how much does the learned part actually add?".  The branch biases stay False,
     so delta_e still vanishes at r = 0 either way and an exact discrete solution
     remains a fixed point by construction.
+
+    ``use_coeff`` is the one case where that argument does not carry itself.  The
+    branch input is then ``[r, kappa]``, and kappa is non-zero even when r is, so
+    a bias-free branch can still return a non-zero correction at r = 0 and the
+    fixed point is lost.  The fix is structural rather than a penalty: the
+    correction is taken RELATIVE to the branch's response at zero residual,
+
+        delta_e = [ branch(r, kappa) - branch(0, kappa) ] . trunk(x) ,
+
+    which is exactly zero at r = 0 for every kappa, and still lets kappa modulate
+    the response.  It costs one extra (cheap) branch evaluation, and only when the
+    coefficient input is switched on.  For a single fixed operator, where kappa is
+    the same vector for every sample and therefore carries no per-sample
+    information, the honest default is to leave it off.
     """
 
     def __init__(self, n_dof, trunk_dim, p=64, width=128, depth=3, use_coeff=False,
@@ -606,14 +695,19 @@ class DeepONetSmoother(nn.Module):
             self.register_buffer("dinv", torch.from_numpy(1.0 / np.asarray(diag, dtype=np.float64)))
             self.omega = nn.Parameter(torch.tensor(float(omega_init), dtype=torch.float64))
 
+    def _branch_features(self, residual, coeff):
+        c = coeff.expand(residual.shape[0], -1)
+        return torch.cat([residual, c], dim=1), torch.cat([torch.zeros_like(residual), c], dim=1)
+
     def forward(self, residual, features, coeff=None):
+        t = self.trunk(features)
         if self.use_coeff:
             if coeff is None:
                 raise ValueError("model was built with use_coeff=True")
-            b_in = torch.cat([residual, coeff.expand(residual.shape[0], -1)], dim=1)
+            b_in, b_zero = self._branch_features(residual, coeff)
+            out = (self.branch(b_in) - self.branch(b_zero)) @ t.t()
         else:
-            b_in = residual
-        out = self.branch(b_in) @ self.trunk(features).t()
+            out = self.branch(residual) @ t.t()
         if self.base_smoother == "jacobi":
             out = self.omega.to(out.dtype) * (residual * self.dinv.to(out.dtype)) + out
         return out
@@ -623,28 +717,100 @@ class DeepONetSmoother(nn.Module):
 # 6. Losses and metrics
 # ---------------------------------------------------------------------------
 def energy_loss(correction, errors, A, AT, eps=1e-12):
-    """Relative A-energy of the remaining error: the primary objective."""
-    e_tilde = errors - correction
-    return ((energy_norm(e_tilde, A, AT) + eps) / (energy_norm(errors, A, AT) + eps)).mean()
+    """L_E -- relative A-energy after ONE learned smoothing step.
 
+        e_tilde = e - delta_e ,    L_E = mean( ||e_tilde||_A^2 / ||e||_A^2 )
 
-def coarse_complement_loss(correction, errors, A, AT, P, PT, A_H_chol, eps=1e-12):
-    """Energy of the part of the remaining error the COARSE GRID CANNOT REMOVE.
-
-    Q = I - P (P^T A P)^{-1} P^T A is the A_h-orthogonal projection onto the
-    complement of range(P).  Penalising ||Q e_tilde||_A is exactly the quantity
-    two-grid smoothing theory bounds: what the coarse-grid correction will fix is
-    not the smoother's job.  This is a statement about a specific subspace, NOT
-    about "high frequencies".
+    The denominator is the energy of the ORIGINAL error and ``eps`` only floors
+    that denominator; it is deliberately NOT added to the numerator, so a perfect
+    correction gives a loss of zero rather than a floor of eps.
     """
-    def Q(v):
-        z = spmm(PT, P, spmm(A, AT, v.t()))      # P^T A v  -> (n_coarse, B)
-        w = torch.cholesky_solve(z, A_H_chol)    # (P^T A P)^{-1} P^T A v
-        return (v.t() - spmm(P, PT, w)).t()
+    e_tilde = errors - correction
+    num = energy_norm(e_tilde, A, AT)
+    den = energy_norm(errors, A, AT).clamp_min(eps)
+    return (num / den).mean()
 
-    Qe = Q(errors)
-    Qet = Q(errors - correction)
-    return ((energy_norm(Qet, A, AT) + eps) / (energy_norm(Qe, A, AT) + eps)).mean()
+
+def coarse_grid_correction_loss(correction, errors, A, AT, P, PT, A_H_chol, eps=1e-12):
+    """L_CGC -- relative A-energy left after ONE learned smoothing step FOLLOWED BY
+    one exact coarse-grid correction.  This is the quantity a two-grid smoother
+    exists to reduce, and the primary training objective.
+
+        e_tilde = e - delta_e
+        e_cgc   = (I - P A_H^{-1} P^T A) e_tilde
+        L_CGC   = mean( ||e_cgc||_A^2 / ||e||_A^2 )
+
+    ``P`` maps coarse to fine, ``PT = P^T``, so the coarse residual really is
+    ``P^T A e_tilde``: the shape is (n_fine, n_coarse) and the coarse space has
+    the SHORTER dimension.  Getting that backwards silently trains a different
+    operator.
+
+    ``A_H_chol`` is the Cholesky factor of the coarse operator, built ONCE before
+    training (not per batch).  Which operator it is matters -- see
+    ``coarse_operator_matrix``:
+
+      * ``A_H = P^T A P`` (Galerkin) makes ``I - P A_H^{-1} P^T A`` the exact
+        A_h-orthogonal projection onto the complement of range(P).  On a smooth
+        plane and a nested space it is the textbook two-grid propagator.
+      * ``A_H`` assembled on the coarse mesh is what the deal.II hierarchy and the
+        V-cycle in ``src/main.cpp`` actually use.  On a curved surface it is close
+        to, but not equal to, the Galerkin product, so the projection property is
+        then only approximate.  When the goal is to optimise the step that is
+        actually executed, this is the operator the loss must contain.
+
+    The DENOMINATOR IS ||e||_A^2, NOT ||Q e||_A^2.  The coarse complement of the
+    fixed point of this loss is range(P), and ||Q e||_A vanishes for e in range(P)
+    -- exactly the samples the loss should call "already fine" -- so normalising
+    by it divides by a number that goes to zero on a legitimate part of the space.
+    Every stored error here has unit A-energy, so ||e||_A^2 = 1 and the loss is the
+    remaining energy itself, comparable across samples and mechanisms.
+    """
+    remaining = errors - correction                     # (B, n_fine)
+    z = spmm(PT, P, spmm(A, AT, remaining.t()))         # P^T A (e - de) -> (n_H, B)
+    w = torch.cholesky_solve(z, A_H_chol)               # A_H^{-1} P^T A (e - de)
+    after = (remaining.t() - spmm(P, PT, w)).t()        # (B, n_fine)
+    return (energy_norm(after, A, AT) / energy_norm(errors, A, AT).clamp_min(eps)).mean()
+
+
+def total_smoother_loss(correction, errors, A, AT, P, PT, A_H_chol, lambda_energy=0.1):
+    """L = L_CGC + lambda * L_E, returning all three so the two terms can be
+    logged separately.
+
+    L_CGC is the primary objective: it scores exactly what the two-grid step does.
+    L_E is the auxiliary term; it constrains the correction in the directions the
+    coarse grid would have removed anyway, which the primary term alone does not
+    see (with an exact coarse solve, a correction that is pure range(P) noise
+    leaves L_CGC unchanged but changes what the smoother does inside a recursive
+    V-cycle, where the coarse solve is not exact).
+
+    ``lambda_energy`` is an EXPERIMENTAL setting, not a derived optimum: run 0.0
+    (pure two-grid objective) and a small positive value and compare both terms
+    and the measured V-cycle, rather than assuming one wins.
+    """
+    l_energy = energy_loss(correction, errors, A, AT)
+    l_cgc = coarse_grid_correction_loss(correction, errors, A, AT, P, PT, A_H_chol)
+    return l_cgc + lambda_energy * l_energy, l_cgc, l_energy
+
+
+def cgc_ratios_numpy(E, correction, A, P, A_H=None, solve=None, eps=1e-300):
+    """||(I - P A_H^{-1} P^T A)(E - correction)||_A / ||E||_A, per sample.
+
+    The evaluation-side counterpart of ``coarse_grid_correction_loss``: plain
+    NumPy with a sparse LU coarse solve, so it can score ANY coarse operator
+    (Galerkin or assembled) on the test set without densifying anything and
+    without autograd.  Used to quantify how much the choice of A_H moves the
+    number the loss reports, and to compare smoothing-only reductions against
+    smoothing-plus-coarse-correction reductions.  Pass ``solve`` to reuse one
+    factorisation across methods; otherwise it is built from ``A_H``.
+    """
+    if solve is None:
+        solve = spla.splu(sp.csc_matrix(A_H)).solve
+    R = A @ (E - correction).T                      # (n, B)
+    W = solve(np.asarray(P.T @ R))
+    after = (E - correction).T - np.asarray(P @ W)
+    num = np.einsum("ib,ib->b", after, A @ after)
+    den = np.einsum("bi,bi->b", E, (A @ E.T).T)
+    return np.sqrt(np.maximum(num, 0.0) / np.maximum(den, eps))
 
 
 @torch.no_grad()
@@ -774,7 +940,8 @@ class Hierarchy:
         e_smooth = e - smoother_correction
         return {"smooth": e_smooth, "coarse": e_H, "two_grid": e_smooth - P @ e_H}
 
-    def vcycle_apply(self, r, lvl, smooth_fine, pre=1, post=1, omega=2.0 / 3.0):
+    def vcycle_apply(self, r, lvl, smooth_fine, pre=1, post=1, omega=2.0 / 3.0,
+                     smooth_coarse=None):
         """One V-cycle applied to the RESIDUAL: returns an approximate solution
         (correction) of A_l x = r.
 
@@ -786,15 +953,21 @@ class Hierarchy:
         coarse solve, and the cycle then diverges instead of converging.
 
         ``smooth_fine`` is a residual -> correction callable used at
-        ``self.fine_level`` only.  Coarser levels use damped Jacobi, because a
-        smoother trained on one DoF count and ordering cannot act at another
-        level: the concrete consequence of the fixed-length branch.
+        ``self.fine_level`` only.  Coarser levels use damped Jacobi by default,
+        because a smoother trained on one DoF count and ordering cannot act at
+        another level: the concrete consequence of the fixed-length branch.
+        ``smooth_coarse`` overrides that choice, which is what a fair comparison
+        against the solver's own smoother needs -- ``src/main.cpp`` uses
+        symmetric SOR with two steps at EVERY level, not damped Jacobi, so
+        measuring a cycle against Jacobi below flatters the learned smoother.
         """
         A = self.levels[lvl].A
 
         def S(rr):
             if lvl == self.fine_level:
                 return smooth_fine(rr)
+            if smooth_coarse is not None:
+                return smooth_coarse(rr)
             return omega * rr / A.diagonal()
 
         if lvl == 0:
@@ -807,7 +980,8 @@ class Hierarchy:
             x = x + S(r - A @ x)
         r1 = r - A @ x
         x = x + self.levels[lvl].P @ self.vcycle_apply(
-            self.levels[lvl].P.T @ r1, lvl - 1, smooth_fine, pre, post, omega)
+            self.levels[lvl].P.T @ r1, lvl - 1, smooth_fine, pre, post, omega,
+            smooth_coarse)
         for _ in range(post):
             x = x + S(r - A @ x)
         return x
@@ -817,6 +991,19 @@ class Hierarchy:
 # 9. Training
 # ---------------------------------------------------------------------------
 def train(model, tr, va, args, A, AT, P, PT, A_H_chol, features, Ctr, Cva, out_dir, log):
+    """Train the smoother.
+
+    The objective is ``L_CGC + lambda * L_E`` when ``--loss-mode cgc`` (the
+    default) and ``L_E`` alone when ``--loss-mode energy``.  Both terms are logged
+    separately at every log point and written to ``history.csv``: a single total
+    cannot tell "the smoother got better" from "the coarse correction is carrying
+    the run", and those are different claims.
+
+    Model selection follows the objective actually being trained.  Under
+    ``--loss-mode energy`` that is the validation A-energy, which is what earlier
+    releases reported as ``val_energy``; that column is kept either way, so old
+    and new runs stay comparable.
+    """
     Etr, Rtr = tr
     Eva, Rva = va
     n_tr = Etr.shape[0]
@@ -825,17 +1012,27 @@ def train(model, tr, va, args, A, AT, P, PT, A_H_chol, features, Ctr, Cva, out_d
         opt, factor=0.5, patience=max(50, args.early_stop // 4))
     g = torch.Generator().manual_seed(args.seed)
 
+    use_cgc = args.loss_mode == "cgc"
+    if use_cgc and (P is None or A_H_chol is None):
+        raise SystemExit("--loss-mode cgc needs the coarse operator; export P or "
+                         "use --loss-mode energy")
+
     history, best, best_epoch, bad = [], float("inf"), -1, 0
+    best_energy = float("inf")
     n_val = min(args.val_batch, Eva.shape[0])
 
     for epoch in range(args.epochs + 1):
         model.train()
         idx = torch.randperm(n_tr, generator=g)[:args.batch_size]
-        corr = model(Rtr[idx], features, None if Ctr is None else Ctr)
-        loss = energy_loss(corr, Etr[idx], A, AT)
-        if args.coarse_loss_weight > 0.0:
-            loss = loss + args.coarse_loss_weight * coarse_complement_loss(
-                corr, Etr[idx], A, AT, P, PT, A_H_chol)
+        Eb, Rb = Etr[idx], Rtr[idx]
+        Cb = None if Ctr is None else Ctr
+        corr = model(Rb, features, Cb)
+        if use_cgc:
+            loss, tr_cgc, tr_energy = total_smoother_loss(
+                corr, Eb, A, AT, P, PT, A_H_chol, args.lambda_energy)
+        else:
+            tr_energy = energy_loss(corr, Eb, A, AT)
+            tr_cgc, loss = None, tr_energy
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if args.grad_clip > 0:
@@ -846,25 +1043,43 @@ def train(model, tr, va, args, A, AT, P, PT, A_H_chol, features, Ctr, Cva, out_d
             model.eval()
             with torch.no_grad():
                 vc = model(Rva[:n_val], features, None if Cva is None else Cva)
-                vloss = float(energy_loss(vc, Eva[:n_val], A, AT))
+                v_energy = float(energy_loss(vc, Eva[:n_val], A, AT))
+                if use_cgc:
+                    v_cgc = float(coarse_grid_correction_loss(
+                        vc, Eva[:n_val], A, AT, P, PT, A_H_chol))
+                    vloss = v_cgc + args.lambda_energy * v_energy
+                else:
+                    v_cgc, vloss = None, v_energy
             sched.step(vloss)
-            history.append({"epoch": epoch, "train_loss": float(loss.item()),
-                            "val_energy": vloss, "lr": float(opt.param_groups[0]["lr"])})
+            row = {"epoch": epoch, "train_loss": float(loss.item()),
+                   "train_cgc": None if tr_cgc is None else float(tr_cgc.item()),
+                   "train_energy": float(tr_energy.item()),
+                   "val_total": vloss, "val_cgc": v_cgc, "val_energy": v_energy,
+                   "lr": float(opt.param_groups[0]["lr"])}
+            history.append(row)
             # Always report at --log-every: a multi-thousand-epoch run that prints
             # nothing until it finishes looks hung.
-            log("  epoch %6d  train %.6f  val %.6f  lr %.2e"
-                % (epoch, loss.item(), vloss, opt.param_groups[0]["lr"]))
+            if use_cgc:
+                log("  epoch %6d  total %.6f (cgc %.6f + %.2f*energy %.6f)  val %.6f "
+                    "(cgc %.6f)  lr %.2e"
+                    % (epoch, loss.item(), tr_cgc.item(), args.lambda_energy,
+                       tr_energy.item(), vloss, v_cgc, opt.param_groups[0]["lr"]))
+            else:
+                log("  epoch %6d  train %.6f  val %.6f  lr %.2e"
+                    % (epoch, loss.item(), vloss, opt.param_groups[0]["lr"]))
             if vloss < best - args.min_delta:
                 best, best_epoch, bad = vloss, epoch, 0
+                best_energy = v_energy
                 torch.save({"state_dict": model.state_dict(), "config": vars(args),
-                            "epoch": epoch, "val_energy": vloss},
+                            "epoch": epoch, "val_total": vloss, "val_cgc": v_cgc,
+                            "val_energy": v_energy},
                            os.path.join(out_dir, "best_model.pt"))
             else:
                 bad += 1
                 if bad >= args.early_stop:
                     log("  early stop at epoch %d (best %d, val %.6f)" % (epoch, best_epoch, best))
                     break
-    return history, best, best_epoch
+    return history, best, best_epoch, best_energy
 
 
 # ---------------------------------------------------------------------------
@@ -873,13 +1088,19 @@ def train(model, tr, va, args, A, AT, P, PT, A_H_chol, features, Ctr, Cva, out_d
 def plot_history(history, path):
     ep = [h["epoch"] for h in history]
     fig, ax = plt.subplots(figsize=(6.4, 4.0))
-    ax.semilogy(ep, [h["train_loss"] for h in history], label="train (A-energy loss)")
-    ax.semilogy(ep, [h["val_energy"] for h in history], label="validation (A-energy loss)")
+    ax.semilogy(ep, [h["train_loss"] for h in history], label="train (objective)")
+    ax.semilogy(ep, [h["val_energy"] for h in history], label=r"val $L_E$ (A-energy)")
+    if any(h.get("val_cgc") is not None for h in history):
+        # The two terms separately: the primary objective and the auxiliary one,
+        # because their ratio is what says which mechanism is doing the work.
+        ax.semilogy(ep, [h["val_cgc"] for h in history],
+                    label=r"val $L_{CGC}$ (after coarse correction)")
+        ax.semilogy(ep, [h["train_cgc"] for h in history], ls=":", label=r"train $L_{CGC}$")
     ax.set_xlabel("epoch")
-    ax.set_ylabel(r"$\|e-\delta e\|_A^2/\|e\|_A^2$")
+    ax.set_ylabel(r"relative squared A-energy")
     ax.set_title("DeepONet smoother training")
     ax.grid(alpha=0.3)
-    ax.legend()
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
@@ -1010,7 +1231,27 @@ def main(argv=None):
     ap.add_argument("--early-stop", type=int, default=400)
     ap.add_argument("--min-delta", type=float, default=1e-6)
     ap.add_argument("--log-every", type=int, default=100)
-    ap.add_argument("--coarse-loss-weight", type=float, default=0.0)
+    ap.add_argument("--loss-mode", choices=["cgc", "energy"], default="cgc",
+                    help="cgc: L_CGC + lambda*L_E, where L_CGC is the A-energy left "
+                         "after one smoothing step AND one coarse-grid correction; "
+                         "energy: L_E alone (the earlier objective)")
+    ap.add_argument("--lambda-energy", type=float, default=0.1,
+                    help="weight of the auxiliary full-energy term under "
+                         "--loss-mode cgc. EXPERIMENTAL, not derived: compare 0.0 "
+                         "against a small positive value and report both terms")
+    ap.add_argument("--coarse-operator", choices=["assembled", "galerkin"],
+                    default="assembled",
+                    help="coarse operator inside the loss. assembled = level l-1's "
+                         "own matrix, the one the C++ V-cycle uses; galerkin = P^T A P, "
+                         "for which the two-grid propagator is an exact A-orthogonal "
+                         "projection. The two differ on a curved surface")
+    ap.add_argument("--max-dense-coarse", type=int, default=4096,
+                    help="refuse to densify a coarse operator larger than this")
+    ap.add_argument("--coarse-loss-weight", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--smoother-iterations", type=int, default=5,
+                    help="repeated applications in the stability check: a smoother is "
+                         "used inside an iteration, not once")
     ap.add_argument("--n-coarse-eval", type=int, default=64,
                     help="test samples used for the two-grid / V-cycle analysis")
     ap.add_argument("--vcycle", action="store_true")
@@ -1019,6 +1260,16 @@ def main(argv=None):
     ap.add_argument("--gen-only", action="store_true",
                     help="generate and save the datasets, then stop")
     args = ap.parse_args(argv)
+
+    if args.coarse_loss_weight is not None:
+        raise SystemExit(
+            "--coarse-loss-weight is gone.  It weighted the old total\n"
+            "    L = L_E + w * L_old-coarse-complement ,\n"
+            "which is the OPPOSITE arrangement to the intended objective and used a\n"
+            "denominator that vanishes on range(P).  The objective is now\n"
+            "    L = L_CGC + lambda * L_E ,\n"
+            "so pass --loss-mode cgc --lambda-energy <value> instead "
+            "(see --help).")
 
     torch.set_num_threads(args.threads)
     try:                       # the sparse-invariant notice is noise for a fixed pattern
@@ -1134,29 +1385,66 @@ def main(argv=None):
         log("  A nonzero difference is expected and is reported rather than hidden: on a")
         log("  curved surface the coarse matrix is assembled with the isoparametric")
         log("  mapping, and a coarse basis function is not reproduced exactly by the fine")
-        log("  cells' maps, so the hierarchy is not exactly Galerkin. Consequently the")
-        log("  coarse-complement loss builds Q from P^T A P (an exact A-orthogonal")
-        log("  projection), while the two-grid step uses the assembled A_H (what the")
-        log("  actual multigrid cycle uses).")
+        log("  cells' maps, so the hierarchy is not exactly Galerkin.  The consequence")
+        log("  for the loss is spelled out below: which A_H it contains is a choice, and")
+        log("  the two choices do not give the same operator.")
     else:
         log("Hierarchy: unavailable (need %s/L0..L%d) -- two-grid and V-cycle "
             "analysis will be SKIPPED, not approximated" % (hroot, level_idx or 0))
 
+    # ---- the coarse operator that goes INTO the loss ---------------------
+    # Consistency with the C++ cycle, checked rather than assumed:
+    #   * src/main.cpp uses MGTransferPrebuilt, whose restriction is the
+    #     transpose of the prolongation, so R = P^T exactly;
+    #   * it applies no interface/edge matrices unless the hierarchy has
+    #     refinement-edge DoFs -- this exported hierarchy is uniformly refined
+    #     and reports 0 of them, so the coarse-grid correction it executes is
+    #     I - P A_H^{-1} P^T A_h with A_H the ASSEMBLED coarse matrix.
+    # Therefore "assembled" is the default: the loss then scores the step that is
+    # actually executed.  "galerkin" (P^T A P) is kept available because it is the
+    # operator for which the correction is an exact A-orthogonal projection, and
+    # the difference between the two is measured and reported.
     P_t = PT_t = A_H_chol = None
+    A_H_used = A_H_used_report = None
     if hierarchy is not None and level_idx and level_idx > 0 and ld.P is not None:
         P_t = to_torch_sparse(ld.P, dtype)
         PT_t = to_torch_sparse(ld.P.T.tocsr(), dtype)
-        # Only the COARSE operator is densified: it is small (16..1024 here) and a
+        ld_coarse = levels[level_idx - 1]
+        n_edge = 0 if ld.edge is None else int(np.asarray(ld.edge).size)
+        log("")
+        log("Loss target -- the coarse-grid correction the loss simulates:")
+        log("  restriction      : R = P^T (MGTransferPrebuilt in src/main.cpp), "
+            "P is %d x %d (fine x coarse)" % ld.P.shape)
+        log("  interface/edge   : %d refinement-edge DoFs -> %s"
+            % (n_edge, "no edge matrices are applied" if n_edge == 0
+               else "edge matrices ARE applied, so the executed correction is NOT "
+                    "exactly I - P A_H^{-1} P^T A_h"))
+        A_H_used, lam_min, lam_max = coarse_operator_matrix(ld, ld_coarse,
+                                                            args.coarse_operator)
+        A_H_chol = dense_cholesky_spd(A_H_used, dtype, args.max_dense_coarse,
+                                      args.coarse_operator)
+        log("  coarse operator  : %s (%d x %d, nnz %d), spectrum [%.3e, %.3e]"
+            % (args.coarse_operator, A_H_used.shape[0], A_H_used.shape[1],
+               A_H_used.nnz, lam_min, lam_max))
+        log("  matches the C++ V-cycle operator: %s"
+            % ("YES (assembled A_H)" if args.coarse_operator == "assembled" else
+               "NO -- P^T A P is used instead; the two-grid step the V-cycle runs "
+               "uses the assembled A_H"))
+        # Only the COARSE operator is densified: it is small (16..4096 here) and a
         # Cholesky factor is the cleanest differentiable coarse solve.  The fine
         # A_h stays sparse throughout -- that is the requirement that matters.
-        A_H_gal = (ld.P.T @ ld.A @ ld.P).tocsc()
-        A_H_gal = ((A_H_gal + A_H_gal.T) * 0.5).tocsc()
-        A_H_gal_dense = torch.from_numpy(A_H_gal.toarray()).to(dtype)
-        A_H_chol = torch.linalg.cholesky(A_H_gal_dense)
-        log("  coarse operator for the loss = P^T A P, densified for the Cholesky "
-            "solve: %r (%.2f MB)" % (tuple(A_H_gal_dense.shape),
-                                     A_H_gal_dense.numel() * A_H_gal_dense.element_size() / 1e6))
-        log("  fine A_h remains sparse throughout")
+        log("  densified for the differentiable coarse solve: %.2f MB; the fine A_h "
+            "remains sparse throughout"
+            % (A_H_chol.numel() * A_H_chol.element_size() / 1e6))
+        A_H_used_report = A_H_used
+
+    if args.loss_mode == "cgc" and A_H_chol is None:
+        raise SystemExit(
+            "--loss-mode cgc (the default) needs the coarse operator, i.e. "
+            "prolongation.npz at %s and levels L0..L%d under %s.  Without them the "
+            "two-grid objective cannot be formed; re-run with --loss-mode energy to "
+            "train on the full-energy objective alone."
+            % (args.data_dir, (level_idx or 0), hroot))
 
     # ---- data ------------------------------------------------------------
     log("")
@@ -1219,15 +1507,34 @@ def main(argv=None):
            features_np.shape[1], args.p, args.depth))
     log("  parameters %d | dtype %s | threads %d | trunk %s"
         % (n_par, args.dtype, args.threads, args.trunk_features))
+    if args.use_coefficient:
+        log("  coefficient input ON: the branch sees [r, kappa], and the correction is")
+        log("  taken relative to its r=0 response, so delta_e(0, kappa) = 0 holds by")
+        log("  construction rather than by hope.")
+        # What matters is not whether kappa varies over the mesh -- it does -- but
+        # whether it varies over SAMPLES.  Here every sample is a vector on the
+        # same level with the same operator, so the same kappa vector is fed in
+        # every time: it is a constant input, and a constant input carries no
+        # information about which sample this is.
+        log("  NOTE: every sample in this program shares one A_h and hence one kappa,")
+        log("        so kappa is a CONSTANT input: it widens the branch's first layer")
+        log("        from %d to %d inputs (%d extra weights) and distinguishes nothing"
+            % (n_dof, 2 * n_dof, n_dof * args.width))
+        log("        between samples.  Leave it off for the fixed-operator study; a")
+        log("        coefficient-family experiment (several kappa, therefore several")
+        log("        matrices) is what would justify it.")
 
     # ---- train -----------------------------------------------------------
     t0 = time.perf_counter()
-    history, best_val, best_epoch = train(model, tr, va, args, A_t, AT_t, P_t, PT_t,
-                                          A_H_chol, features, Ctr, Cva, args.out_dir, log)
+    history, best_val, best_epoch, best_val_energy = train(
+        model, tr, va, args, A_t, AT_t, P_t, PT_t,
+        A_H_chol, features, Ctr, Cva, args.out_dir, log)
     train_seconds = time.perf_counter() - t0
     log("  training %.1f s (best epoch %d, val %.6f)" % (train_seconds, best_epoch, best_val))
     with open(os.path.join(args.out_dir, "history.csv"), "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["epoch", "train_loss", "val_energy", "lr"])
+        w = csv.DictWriter(fh, fieldnames=["epoch", "train_loss", "train_cgc",
+                                           "train_energy", "val_total", "val_cgc",
+                                           "val_energy", "lr"])
         w.writeheader()
         w.writerows(history)
     plot_history(history, os.path.join(pdir, "loss_curves.png"))
@@ -1290,6 +1597,11 @@ def main(argv=None):
             "energy_ratio_mean": float(np.mean(m["energy_ratio"][mask])),
             "energy_ratio_median": float(np.median(m["energy_ratio"][mask])),
             "energy_ratio_p90": float(np.percentile(m["energy_ratio"][mask], 90)),
+            # A mean over a set hides the samples a smoother makes WORSE.  Report
+            # the worst one and the share that grew, per mechanism, so "works on
+            # average" cannot be read as "works".
+            "energy_ratio_max": float(np.max(m["energy_ratio"][mask])),
+            "frac_amplified": float(np.mean(m["energy_ratio"][mask] > 1.0)),
             "coeff_l2_ratio_mean": float(np.mean(m["coeff_ratio"][mask])),
             "residual_ratio_mean": float(np.mean(m["residual_ratio"][mask])),
             "n": int(mask.sum()),
@@ -1307,8 +1619,114 @@ def main(argv=None):
             per_mech["localized"][name]["energy_ratio_mean"],
             per_mech["algebraic"][name]["energy_ratio_mean"]))
 
+    # ---- what the loss measures, on the real test set --------------------
+    # The trained objective is evaluated here on data it never saw, under BOTH
+    # coarse operators, so the trainer/target mismatch is a number rather than a
+    # caveat.  Smoothing-only reduction (above) and smoothing+coarse-correction
+    # reduction (below) are different claims and are reported separately.
+    loss_target = {"loss_mode": args.loss_mode, "lambda_energy": args.lambda_energy,
+                   "coarse_operator_for_loss": args.coarse_operator if A_H_chol is not None else None,
+                   # L_E on the test set, per method: the mean of the SQUARED ratios,
+                   # which is the quantity the loss is.  (The per-mechanism table
+                   # reports the mean of the ratios instead, which is the usual way
+                   # to quote a reduction and is not the same number.)
+                   "energy_test": {name: float(np.mean(m["energy_ratio"] ** 2))
+                                   for name, m in methods.items()}}
+    if hierarchy is not None and level_idx and level_idx > 0 and ld.P is not None:
+        ops = {"assembled": levels[level_idx - 1].A,
+               "galerkin": (ld.P.T @ ld.A @ ld.P).tocsr()}
+        loss_target["cgc_test"] = {}
+        for op_name, A_H in ops.items():
+            solve = spla.splu(sp.csc_matrix(A_H)).solve
+            entry = {}
+            for name, e_after_in in e_after_map.items():
+                corr_m = E_np - e_after_in            # the correction that method applied
+                r = cgc_ratios_numpy(E_np, corr_m, ld.A, ld.P, solve=solve)
+                # the ENERGY (mean of squared ratios) is the quantity the loss is,
+                # so that is what is stored; the ratio mean is kept for reference
+                entry[name] = {"energy_mean": float(np.mean(r ** 2)),
+                               "ratio_mean": float(np.mean(r)),
+                               "ratio_max": float(np.max(r)),
+                               "frac_amplified": float(np.mean(r > 1.0))}
+            loss_target["cgc_test"][op_name] = entry
+        loss_target["note"] = (
+            "cgc_test[op][method] is one smoother application FOLLOWED BY one exact "
+            "coarse-grid correction, over the test set: energy_mean is the mean of "
+            "||(I - P A_H^-1 P^T A)(e - de)||_A^2 / ||e||_A^2, which is exactly the "
+            "quantity L_CGC is the mean of.  'assembled' is the operator the C++ "
+            "V-cycle uses, 'galerkin' the one for which the corrector is an exact "
+            "A-orthogonal projection; the gap between them is the trainer/target "
+            "mismatch, measured rather than assumed away.")
+        log("")
+        log("Loss target on the test set -- smoothing THEN coarse correction:")
+        log("  %-20s %-12s %-14s %-14s" % ("method", "L_E", "L_CGC(asm)", "L_CGC(gal)"))
+        for name in e_after_map:
+            le = float(np.mean(methods[name]["energy_ratio"] ** 2))
+            log("  %-20s %-12.6f %-14.6f %-14.6f"
+                % (name, le, loss_target["cgc_test"]["assembled"][name]["energy_mean"],
+                   loss_target["cgc_test"]["galerkin"][name]["energy_mean"]))
+        log("  (all three columns are energies, i.e. the mean squared ratio, so they are")
+        log("   directly comparable; the trainer minimises the 'assembled' column when")
+        log("   --coarse-operator assembled, which is the default)")
+        dk = "DeepONet"
+        log("  worst test sample after smoothing + coarse correction (assembled): "
+            "ratio %.4f, %.1f%% of samples amplified"
+            % (loss_target["cgc_test"]["assembled"][dk]["ratio_max"],
+               100.0 * loss_target["cgc_test"]["assembled"][dk]["frac_amplified"]))
+
+    # ---- is it stable when iterated? -------------------------------------
+    # A mean over one application says nothing about repeated use, which is how a
+    # smoother is actually employed.  e <- e - B(A e), repeated, is the honest
+    # cheap test; a stationary iteration like this is not guaranteed to converge
+    # for an arbitrary learned B, so the result is reported, not assumed.
+    iterations = {}
+    if args.smoother_iterations > 0:
+        log("")
+        log("Repeated application: e <- e - B(A e), %d iterations (mean energy ratio "
+            "per step)" % args.smoother_iterations)
+        with torch.no_grad():
+            e_it = Ete.clone()
+            ratio_hist = []
+            for _ in range(args.smoother_iterations):
+                r_it = A_apply(e_it, A_t, AT_t)
+                e_it = e_it - model(r_it, features, C_all if args.use_coefficient else None)
+                ratio_hist.append(
+                    torch.sqrt(energy_norm(e_it, A_t, AT_t) /
+                               energy_norm(Ete, A_t, AT_t).clamp_min(1e-300)))
+        jac_it = E_np.copy()
+        jac_hist = []
+        for _ in range(args.smoother_iterations):
+            # ld.A is (n,n) and jac_it is (B,n): the sparse product needs the
+            # (n,k) orientation, hence the transpose on both sides
+            jac_it = jac_it - smoothers.jacobi((ld.A @ jac_it.T).T, jac_w)
+            jac_hist.append(np.sqrt(np.einsum("bi,bi->b", jac_it, (ld.A @ jac_it.T).T)
+                                    / np.maximum(e0, 1e-300)))
+        for k in range(args.smoother_iterations):
+            iterations["iter_%d" % (k + 1)] = {
+                "deeponet_mean": float(ratio_hist[k].mean()),
+                "deeponet_max": float(ratio_hist[k].max()),
+                "deeponet_frac_amplified": float((ratio_hist[k] > 1.0).double().mean()),
+                "jacobi_mean": float(jac_hist[k].mean()),
+            }
+        log("  %-6s %-12s %-12s %-14s %-12s" % ("iter", "DeepONet", "worst", "frac > 1",
+                                                "Jacobi ref"))
+        for k in range(args.smoother_iterations):
+            d = iterations["iter_%d" % (k + 1)]
+            log("  %-6d %-12.5f %-12.5f %-14.4f %-12.5f"
+                % (k + 1, d["deeponet_mean"], d["deeponet_max"],
+                   d["deeponet_frac_amplified"], d["jacobi_mean"]))
+        mono = all(iterations["iter_%d" % (k + 2)]["deeponet_mean"]
+                   < iterations["iter_%d" % (k + 1)]["deeponet_mean"]
+                   for k in range(args.smoother_iterations - 1))
+        iterations["monotone_mean"] = bool(mono)
+        log("  mean ratio decreases at every step: %s" % ("yes" if mono else
+            "NO -- the iteration stalls or grows; one application is not evidence "
+            "of a usable smoother"))
+        iterations["final_energy_ratio_mean"] = float(ratio_hist[-1].mean())
+
     # ---- coarse-grid correction and V-cycle ------------------------------
     twogrid, vcycle = {}, {}
+    mg_errors = {}
     if hierarchy is not None and level_idx and level_idx > 0:
         log("")
         log("Two-grid analysis with the REAL P and coarse operator from the "
@@ -1335,12 +1753,39 @@ def main(argv=None):
                 % (name, twogrid[name]["smoother_only"], twogrid[name]["coarse_only"],
                    twogrid[name]["two_grid"]))
 
+        # Cross-check: the loss is computed with a differentiable Cholesky solve,
+        # this with the hierarchy's own LU-solve path.  Both are means of squared
+        # ratios -- computing one as the square of a mean ratio would make the two
+        # differ by a Jensen gap and turn a real agreement into a spurious one.
+        if A_H_used_report is not None and args.coarse_operator == "assembled":
+            corr_sel = e_sel - e_after_map["DeepONet"][sel]
+            loss_side = float(np.mean(cgc_ratios_numpy(
+                e_sel, corr_sel, ld.A, ld.P, A_H=A_H_used_report) ** 2))
+            e_tg_sel = np.array([hierarchy.two_grid_stages(e, c, level_idx)["two_grid"]
+                                 for e, c in zip(e_sel, corr_sel)])
+            measured = float(np.mean(
+                np.einsum("bi,bi->b", e_tg_sel, (ld.A @ e_tg_sel.T).T) / e0_sel))
+            twogrid["loss_vs_measured"] = {
+                "loss_L_CGC_selected_samples": loss_side,
+                "measured_two_grid_energy_ratio_sq": measured,
+                "abs_diff": abs(loss_side - measured),
+            }
+            log("  consistency: L_CGC on these samples %.10f vs the measured two-grid "
+                "energy %.10f (difference %.2e)" % (loss_side, measured,
+                                                    abs(loss_side - measured)))
+            log("  (the loss and the cycle are the same operator: the loss factorises")
+            log("   the coarse operator once with Cholesky, the hierarchy LU-solves it)")
+
         if args.vcycle:
             log("")
-            log("V-cycle over %d exported levels. The learned smoother acts at level %d"
-                % (hierarchy.n_levels, level_idx))
+            log("V-cycle over %d exported levels, iterated %d times. The learned "
+                "smoother acts at level %d" % (hierarchy.n_levels,
+                                               args.smoother_iterations, level_idx))
             log("only; coarser levels use damped Jacobi, because a fixed-length branch")
             log("cannot be applied at another DoF count or ordering.")
+            log("A single V-cycle is one step of a stationary iteration; the loss")
+            log("covers one smoothing pass plus one EXACT coarse solve, so the loss")
+            log("being small does not by itself imply the recursive cycle contracts.")
 
             def learned_smooth(rr):
                 with torch.no_grad():
@@ -1350,20 +1795,123 @@ def main(argv=None):
             def jac_smooth(rr):
                 return jac_w * rr / ld.A.diagonal()
 
-            for tag, fn in [("learned@L%d + Jacobi below" % level_idx, learned_smooth),
-                            ("damped Jacobi everywhere", jac_smooth)]:
-                rr = []
+            def symgs_smooth(rr):
+                # One smoother per LEVEL: a ClassicalSmoothers object holds the
+                # factorisation of one matrix, and a smoother is bound to one DoF
+                # count -- the same constraint that stops the learned branch acting
+                # below the fine level.  Reusing the fine level's object here
+                # raises a broadcasting error, not a clear one, so the dictionary
+                # is built from the hierarchy rather than from ld.
+                return symgs_by_n[rr.shape[0]].symmetric_gs(rr)
+
+            # The baselines include symmetric Gauss-Seidel at EVERY level, twice
+            # per side.  That is what src/main.cpp actually runs --
+            # mg::SmootherRelaxation<PreconditionSOR> with set_steps(2) and
+            # set_symmetric(true), i.e. symmetric SOR at omega = 1 -- so a cycle
+            # measured only against damped Jacobi below would be flattering
+            # itself.  Both are reported.
+            # symmetric Gauss-Seidel per level, for the "everywhere" baselines
+            symgs_by_n = {lv.n: ClassicalSmoothers(lv.A) for lv in levels}
+
+            # (tag, fine smoother, coarse smoother, pre, post, omega-for-Jakobi-below)
+            # omega is 2/3 for the learned row -- the module's documented default
+            # for undamped-below -- so that row reproduces exactly the cycle this
+            # program reported before this list grew.
+            variants = [
+                ("learned@L%d + Jacobi below" % level_idx, learned_smooth, None,
+                 1, 1, 2.0 / 3.0),
+                ("damped Jacobi everywhere x1", jac_smooth, None, 1, 1, 2.0 / 3.0),
+                ("symGS everywhere x1", symgs_smooth, symgs_smooth, 1, 1, 1.0),
+                ("symGS everywhere x2 (the C++ smoother)", symgs_smooth, symgs_smooth,
+                 2, 2, 1.0),
+            ]
+            for tag, fn, coarse_fn, pre, post, om in variants:
+                per_iter = []
                 for e in e_sel[:32]:
-                    # V-cycle as a preconditioner: e_new = e - M^{-1}(A e)
-                    ev = e - hierarchy.vcycle_apply(ld.A @ e, level_idx, fn)
-                    rr.append(float(np.sqrt(max(ev @ (ld.A @ ev), 0.0) /
-                                            max(e @ (ld.A @ e), 1e-300))))
-                vcycle[tag] = {"mean_reduction": float(np.mean(rr)),
-                               "min_reduction": float(np.min(rr)),
-                               "max_reduction": float(np.max(rr)), "n": len(rr)}
-                log("  %-34s mean %.4f  [%.4f, %.4f]"
-                    % (tag, vcycle[tag]["mean_reduction"], vcycle[tag]["min_reduction"],
-                       vcycle[tag]["max_reduction"]))
+                    # V-cycle as a preconditioner, applied repeatedly:
+                    # e <- e - M^{-1}(A e).  Ratios are relative to the same
+                    # sample's initial energy, so the sequence is the iteration's
+                    # actual contraction history, not a per-step ratio.
+                    ev = e.copy()
+                    hist = []
+                    for _ in range(args.smoother_iterations):
+                        ev = ev - hierarchy.vcycle_apply(ld.A @ ev, level_idx, fn,
+                                                         pre, post, om,
+                                                         smooth_coarse=coarse_fn)
+                        hist.append(float(np.sqrt(max(ev @ (ld.A @ ev), 0.0) /
+                                                  max(e @ (ld.A @ e), 1e-300))))
+                    per_iter.append(hist)
+                per_iter = np.array(per_iter)                 # (n_samples, n_iter)
+                rr = per_iter[:, 0]
+                vcycle[tag] = {"mean_reduction": float(rr.mean()),
+                               "min_reduction": float(rr.min()),
+                               "max_reduction": float(rr.max()), "n": len(rr),
+                               "iterations": [float(per_iter[:, k].mean())
+                                              for k in range(per_iter.shape[1])],
+                               "contraction_per_iteration": [
+                                   float(per_iter[:, k].mean() / per_iter[:, k - 1].mean())
+                                   for k in range(1, per_iter.shape[1])],
+                               "worst_sample_final": float(per_iter[:, -1].max())}
+                log("  %-38s first %.4f | after %d: %.5f | worst sample %.4f"
+                    % (tag, vcycle[tag]["mean_reduction"], args.smoother_iterations,
+                       vcycle[tag]["iterations"][-1], vcycle[tag]["worst_sample_final"]))
+                log("  %-38s per-iteration mean: %s"
+                    % ("", " ".join("%.4f" % x for x in vcycle[tag]["iterations"])))
+            log("  the last two rows are the solver's own smoother; a learned cycle is")
+            log("  only interesting if it beats those, not merely the Jacobi row")
+
+            # ---- an error distribution that is not synthetic at all ----------
+            # Every generator in section 3 makes errors; these are the errors a
+            # real V-cycle leaves behind as it iterates.  No generator produced
+            # them and their statistics were never tuned, so they are the closest
+            # thing here to an independent test of the smoother in the setting it
+            # would actually be used -- and a smoother trained on algebraic noise
+            # is under no obligation to do well on them.
+            n_mg = min(32, e_sel.shape[0])
+            e_mg = e_sel[:n_mg].copy()
+            mg_errors = {}
+            with torch.no_grad():
+                for k in range(args.smoother_iterations):
+                    e0_mg = np.einsum("bi,bi->b", e_mg, (ld.A @ e_mg.T).T)
+                    Rm = (ld.A @ e_mg.T).T
+                    corr_l = model(torch.from_numpy(Rm).to(dtype), features,
+                                   C_all if args.use_coefficient else None).numpy()
+                    cand = [("DeepONet", e_mg - corr_l),
+                            ("damped Jacobi", e_mg - smoothers.jacobi(Rm, jac_w)),
+                            ("sym. Gauss-Seidel",
+                             e_mg - np.array([smoothers.symmetric_gs(r) for r in Rm]))]
+                    stage = {}
+                    for nm, e_after in cand:
+                        r = np.sqrt(np.maximum(
+                            np.einsum("bi,bi->b", e_after, (ld.A @ e_after.T).T), 0.0)
+                            / np.maximum(e0_mg, 1e-300))
+                        stage[nm] = {"energy_ratio_mean": float(r.mean()),
+                                     "energy_ratio_max": float(r.max()),
+                                     "frac_amplified": float(np.mean(r > 1.0))}
+                    mg_errors["after_%d_vcycles" % k] = {
+                        "initial_energy_ratio_vs_test_error": float(np.sqrt(
+                            np.mean(e0_mg / e0_sel[:n_mg]))),
+                        "methods": stage}
+                    # advance the iteration: one V-cycle with damped Jacobi at every
+                    # level, i.e. what the multigrid does without the network
+                    e_mg = e_mg - np.array([hierarchy.vcycle_apply(ld.A @ e, level_idx,
+                                                                  jac_smooth)
+                                            for e in e_mg])
+            log("")
+            log("Independent test on REAL multigrid-iteration errors (not generated):")
+            log("  %-22s %-12s %-12s %-12s" % ("error after k V-cycles", "DeepONet",
+                                               "dampedJac", "symGS"))
+            for k in range(args.smoother_iterations):
+                st = mg_errors["after_%d_vcycles" % k]
+                log("  k = %-18d %-12.5f %-12.5f %-12.5f"
+                    % (k, st["methods"]["DeepONet"]["energy_ratio_mean"],
+                       st["methods"]["damped Jacobi"]["energy_ratio_mean"],
+                       st["methods"]["sym. Gauss-Seidel"]["energy_ratio_mean"]))
+            log("  (mean ||e - de||_A / ||e||_A on the error left by k V-cycles; each row")
+            log("   uses that row's own error as the 100% reference.  These errors are")
+            log("   smooth by construction of the cycle, so they live largely in the")
+            log("   coarse space -- a smoother is not expected to remove what the coarse")
+            log("   grid is there to remove, and this table is where that shows.)")
 
     # ---- plots -----------------------------------------------------------
     plot_reduction_by_mechanism(per_mech, list(methods),
@@ -1421,14 +1969,34 @@ def main(argv=None):
                   "base_smoother": args.base_smoother,
                   "learned_omega": learned_omega,
                   "use_coefficient": args.use_coefficient, "dtype": args.dtype,
-                  "zero_residual_fixed_point": "branch biases are all False" + (
-                      " and the skip vanishes at r=0" if args.base_smoother == "jacobi" else ""),
+                  "zero_residual_fixed_point": (
+                      "branch biases are all False" + (
+                          " and the skip vanishes at r=0" if args.base_smoother == "jacobi" else "")
+                      + ("; the coefficient input is taken relative to the branch's "
+                         "response at r=0, so delta_e(0, kappa) = 0 exactly"
+                         if args.use_coefficient else "")),
                   "output_rank_bound": "delta_e lies in the row space of the trunk, "
                                        "dimension <= p (%d) against n=%d" % (args.p, n_dof)},
         "training": {"log_points": len(history),
                      "last_epoch": history[-1]["epoch"] if history else None,
                      "best_epoch": best_epoch,
-                     "best_val_energy": best_val, "train_seconds": train_seconds},
+                     "best_val_total": best_val,
+                     # kept under its historical name and meaning (validation L_E at
+                     # the selected epoch) so runs across the objective change stay
+                     # comparable, and so tools/summarize_runs.py keeps working
+                     "best_val_energy": best_val_energy,
+                     "train_seconds": train_seconds,
+                     "objective": ("L_CGC + %.3g * L_E" % args.lambda_energy
+                                   if args.loss_mode == "cgc" else "L_E"),
+                     "model_selection_metric": ("val_total (L_CGC + lambda*L_E)"
+                                                if args.loss_mode == "cgc"
+                                                else "val_energy (L_E)"),
+                     "note": "val_energy is reported either way, so runs under "
+                             "--loss-mode energy and --loss-mode cgc stay comparable "
+                             "on the column earlier releases used."},
+        "loss_target": loss_target,
+        "smoother_iterations": iterations,
+        "mg_iteration_errors": mg_errors,
         "smoothers": per_mech,
         "jacobi_omega": {"best": jac_w, "sweep": jac_table},
         "two_grid": twogrid,

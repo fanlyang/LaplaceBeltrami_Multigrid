@@ -70,12 +70,99 @@ def main():
     loss0 = float(ds.energy_loss(zeros, E, A_t, AT_t))
     check("loss(no correction) = 1", abs(loss0 - 1.0) < 1e-12, "got %.15f" % loss0)
     loss_perfect = float(ds.energy_loss(E.clone(), E, A_t, AT_t))
-    # the eps in the loss is a deliberate division guard, so the floor is ~eps
-    check("loss(perfect correction) ~ 0 (eps floor)", loss_perfect < 1e-11,
-          "got %.3e" % loss_perfect)
+    # eps floors the DENOMINATOR only, so a perfect correction gives 0, not eps
+    check("loss(perfect correction) = 0 (eps is not in the numerator)",
+          loss_perfect < 1e-20, "got %.3e" % loss_perfect)
     half = 0.5 * E
     lh = float(ds.energy_loss(half, E, A_t, AT_t))
     check("loss(e/2) = 1/4", abs(lh - 0.25) < 1e-9, "got %.15f" % lh)
+
+    # ---- L_CGC: smoothing followed by coarse-grid correction -------------
+    print("Coarse-grid-corrected loss (L_CGC) on %s -> %s"
+          % (args.small_level, "L1" if args.small_level == "L2" else "L0"))
+    lv2 = [ds.load_level(os.path.join(args.hierarchy_root, "L%d" % k)) for k in (1, 2)]
+    ld_f, ld_c = lv2[1], lv2[0]
+    Pf = ld_f.P
+    A_H_gal = sp.csr_matrix((Pf.T @ ld_f.A @ Pf + (Pf.T @ ld_f.A @ Pf).T) * 0.5)
+    A_H_asm = sp.csr_matrix((ld_c.A + ld_c.A.T) * 0.5)
+    chol_gal = ds.dense_cholesky_spd(sp.csr_matrix(A_H_gal), torch.float64, 4096, "galerkin")
+    chol_asm = ds.dense_cholesky_spd(sp.csr_matrix(A_H_asm), torch.float64, 4096, "assembled")
+
+    A2 = ld_f.A
+    n2 = A2.shape[0]
+    A2_t = ds.to_torch_sparse(A2)
+    A2T_t = ds.to_torch_sparse(A2.T.tocsr())
+    P_t = ds.to_torch_sparse(Pf)
+    PT_t = ds.to_torch_sparse(Pf.T.tocsr())
+    rng2 = np.random.default_rng(args.seed + 1)
+    Es = np.stack([ds.normalise_and_residualise(rng2.normal(size=n2), A2)[0] for _ in range(4)])
+    Es_t = torch.from_numpy(Es)
+
+    # dense reference: Q = I - P (P^T A P)^{-1} P^T A, applied to e
+    # NOTE the index convention: Q @ Es.T is (n_dof, batch), so the contraction
+    # that yields a per-sample energy is "ib,ib->b" (sum over the DoF index).
+    # Writing "bi,bi->b" here would sum over the batch instead and quietly return a
+    # per-DoF vector -- which is exactly the kind of slip this file exists to catch.
+    Q = np.eye(n2) - Pf @ np.linalg.solve(A_H_gal.toarray(), (Pf.T @ A2).toarray())
+    Q = np.asarray(Q)
+    QE = Q @ Es.T
+    ref = np.einsum("ib,ib->b", QE, A2 @ QE)
+    got = float(ds.coarse_grid_correction_loss(
+        torch.zeros_like(Es_t), Es_t, A2_t, A2T_t, P_t, PT_t, chol_gal))
+    check("L_CGC(Galerkin, no correction) = ||Q e||_A^2 / ||e||_A^2",
+          np.allclose(got, ref.mean(), rtol=1e-10),
+          "sparse %.12f vs dense %.12f" % (got, ref.mean()))
+
+    # the Galerkin corrector really is an A-orthogonal projection: Q^2 = Q
+    check("Galerkin corrector is idempotent (Q^2 = Q)", np.allclose(Q @ Q, Q, atol=1e-10),
+          "max|Q^2 - Q| = %.2e" % np.max(np.abs(Q @ Q - Q)))
+
+    # a PERFECT correction in the coarse space must be recognised as such, which
+    # is exactly the case the old ||Q e||_A^2 denominator could not handle
+    e_span = Pf @ rng2.normal(size=Pf.shape[1])
+    e_span = e_span / np.sqrt(e_span @ A2 @ e_span)
+    e_span_t = torch.from_numpy(e_span[None, :])
+    l_span = float(ds.coarse_grid_correction_loss(
+        torch.zeros_like(e_span_t), e_span_t, A2_t, A2T_t, P_t, PT_t, chol_gal))
+    Qs = Q @ e_span
+    q_span = float(Qs @ (A2 @ Qs))
+    check("an error inside range(P) is reported as fully removable, finitely",
+          l_span < 1e-20 and q_span < 1e-20,
+          "L_CGC %.2e (||Q e||_A^2 = %.2e, the old normaliser)" % (l_span, q_span))
+
+    # the assembled coarse operator is a DIFFERENT operator, and the loss says so
+    got_asm = float(ds.coarse_grid_correction_loss(
+        torch.zeros_like(Es_t), Es_t, A2_t, A2T_t, P_t, PT_t, chol_asm))
+    dense_asm = np.linalg.solve(A_H_asm.toarray(), (Pf.T @ A2 @ Es.T))
+    asm_after = Es.T - Pf @ dense_asm
+    ref_asm = np.einsum("ib,ib->b", asm_after, A2 @ asm_after)
+    check("L_CGC(assembled) matches its own dense reference",
+          np.allclose(got_asm, ref_asm.mean(), rtol=1e-10),
+          "sparse %.10f vs dense %.10f" % (got_asm, ref_asm.mean()))
+    check("the two coarse operators give different losses (so the choice matters)",
+          abs(got - got_asm) > 1e-9,
+          "galerkin %.10f vs assembled %.10f (rel. difference %.2e)"
+          % (got, got_asm, abs(got - got_asm) / max(got, 1e-300)))
+
+    # total = L_CGC + lambda * L_E, with each part returned separately
+    corr_t = 0.1 * Es_t
+    total, l_cgc, l_en = ds.total_smoother_loss(corr_t, Es_t, A2_t, A2T_t, P_t, PT_t,
+                                                chol_asm, lambda_energy=0.25)
+    check("total_smoother_loss = L_CGC + lambda * L_E",
+          abs(float(total) - (float(l_cgc) + 0.25 * float(l_en))) < 1e-12,
+          "%.10f = %.10f + 0.25*%.10f" % (float(total), float(l_cgc), float(l_en)))
+
+    # ---- the zero-residual fixed point, with and without kappa -----------
+    print("Zero-residual fixed point")
+    for use_c, base in ((False, "none"), (False, "jacobi"), (True, "none"), (True, "jacobi")):
+        net = ds.DeepONetSmoother(n2, 4, p=8, width=16, depth=2, use_coeff=use_c,
+                                  base_smoother=base, diag=A2.diagonal()).to(torch.float64)
+        feats = torch.from_numpy(ds.trunk_features(ld_f.angles, "trig", ld_f.coords)).to(torch.float64)
+        kap = torch.from_numpy(np.asarray(ld_f.coeff, dtype=np.float64)) if use_c else None
+        zero_r = torch.zeros(2, n2, dtype=torch.float64)
+        out = net(zero_r, feats, kap)
+        check("B(0) = 0 with use_coeff=%s, base=%s" % (use_c, base),
+              float(out.abs().max()) == 0.0, "max|B(0)| = %.3e" % float(out.abs().max()))
 
     # ---- classical smoothers against dense equivalents -------------------
     sm = ds.ClassicalSmoothers(A)
@@ -132,6 +219,44 @@ def main():
     check("V-cycle contracts monotonically", all(b < a for a, b in zip(red, red[1:])),
           "ratios %s" % ["%.4f" % x for x in red])
     check("V-cycle reduces the error below 1 per cycle", red[0] < 1.0, "%.4f" % red[0])
+
+    # The coarse-level smoother is overridable, which is what a fair comparison
+    # against the solver's own smoother needs (src/main.cpp uses symmetric SOR at
+    # every level, two steps, not damped Jacobi below).  Check that the override
+    # really reaches the coarse levels and that the default is untouched.
+    # A smoother is bound to ONE DoF count -- the same constraint that stops the
+    # learned branch acting below the fine level -- so the stand-ins below are
+    # built per level and dispatch on the DoF count.
+    sm_by_n = {lv[k].n: ds.ClassicalSmoothers(lv[k].A) for k in range(3)}
+
+    def symgs_smooth(rr):
+        return sm_by_n[rr.shape[0]].symmetric_gs(rr)
+
+    def jac_below(rr):
+        # The default coarse smoother is omega * A_l^{-1} rr at EACH level, so a
+        # stand-in for it has to pick the diagonal by DoF count, not use the fine
+        # level's.  Passing the fine diagonal here is what the first version of
+        # this check did, and the shapes did not broadcast.
+        return (2.0 / 3.0) * rr / {lv[k].n: lv[k].A.diagonal() for k in range(3)}[rr.shape[0]]
+
+    e3, _ = ds.normalise_and_residualise(rng.normal(size=lv[2].n), A2)
+
+    def one_cycle(smooth_fine, coarse_fn, pre=1, post=1):
+        ev = e3 - hh.vcycle_apply(A2 @ e3, 2, smooth_fine, pre, post,
+                                  2.0 / 3.0, smooth_coarse=coarse_fn)
+        return float(np.sqrt(max(ev @ (A2 @ ev), 0.0)))
+
+    r_default = one_cycle(jac, None)               # damped Jacobi below (default)
+    r_explicit = one_cycle(jac, jac_below)         # the same, passed explicitly
+    r_symgs = one_cycle(jac, symgs_smooth)         # symGS below
+    r_cxx = one_cycle(symgs_smooth, symgs_smooth, 2, 2)   # the C++ configuration
+    check("omitting smooth_coarse is exactly damped Jacobi below (default intact)",
+          abs(r_default - r_explicit) < 1e-14,
+          "%.10f vs %.10f" % (r_default, r_explicit))
+    check("smooth_coarse reaches the coarse levels (changes the cycle)",
+          abs(r_symgs - r_default) > 1e-6, "%.4f vs %.4f" % (r_symgs, r_default))
+    check("the C++ configuration (symGS x2 everywhere) contracts",
+          r_cxx < 1.0, "one cycle reduces the error to %.4f" % r_cxx)
 
     # ---- the rank bound is real -----------------------------------------
     print("Rank-bound check")
