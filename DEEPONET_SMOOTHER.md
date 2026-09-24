@@ -78,22 +78,32 @@ The exporter writes plain `.coo`/`.txt` dumps; the converter turns them into
 # export_level_data, so the image must be rebuilt from this branch's src/main.cpp)
 docker build -t lb-exporter .
 
-# degree 1 = linear tent functions, 5 refinement cycles -> levels 0..4
+# degree 1 = linear tent functions, 6 refinement cycles -> levels 0..5
 docker run --rm --entrypoint /home/dealii/solver/build/solver \
-    -v "$PWD/level_dumps:/work" -w /work lb-exporter 1 5
+    -v "$PWD/level_dumps:/work" -w /work lb-exporter 1 6
 
-# convert one consistent snapshot (cycle 4). level 3 = 1024 DoFs.
+# convert one snapshot per level. level 3 = 1024 DoFs, 4 = 4096, 5 = 16384.
 for L in 0 1 2 3 4; do
   python tools/convert_level_data.py --data-dir level_dumps --level $L \
       --cycle 4 --out-dir level_data/L$L
 done
+python tools/convert_level_data.py --data-dir level_dumps --level 5 \
+    --cycle 5 --out-dir level_data/L5
 ```
 
+Mixing cycle 4 for levels 0–4 with cycle 5 for level 5 is safe, and the reason is
+worth stating rather than assuming: a level matrix is assembled on that level's
+mesh, which uniform refinement never changes, so `A-level-4-cycle-4.coo` and
+`A-level-4-cycle-5.coo` are **byte-identical** (verified by `md5sum`, likewise for
+level 3). The cycle only decides how deep the hierarchy goes.
+
 `level_data/L3` is a 32x32 periodic DoF lattice (1024 DoFs, 9216 nonzeros, 9 per
-row), `A` symmetric to exactly 0, Jacobi-scaled condition number 169, and
-prolongation `P: 1024 x 256`. `load_level()` verifies all of this at run time and
-refuses to continue on a non-symmetric or non-definite matrix rather than
-proceeding on an assumption.
+row), `L4` is 64x64 (4096), `L5` is 128x128 (16384, 147456 nonzeros). In every
+case `A` is symmetric to exactly 0 and passes a sparse positive-definiteness test;
+the Jacobi-scaled condition number grows about fourfold per refinement (169, 679,
+2718), as expected for a Laplacian-like operator. `load_level()` verifies all of
+this at run time and refuses to continue on a non-symmetric or non-definite
+matrix rather than proceeding on an assumption.
 
 ## 4. Run
 

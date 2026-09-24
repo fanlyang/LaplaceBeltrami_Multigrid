@@ -52,10 +52,22 @@ esac
 #        delta_e = omega D^{-1} r + B_theta(r)
 #    The network then only supplies what damped Jacobi leaves behind, which is
 #    smooth -- so a small smooth trunk is reasonable again, and the run answers
-#    "how much does the learned part actually add over Jacobi?".
+#    "how much does the learned part actually add over Jacobi?".  This is the
+#    configuration that beat every classical smoother at level 3.
 "$PY" deeponet_smoother.py $COMMON --out-dir results/skip_jacobi_trig128 \
     --n-train 1024 --epochs 6000 --log-every 1500 --p 128 \
     --trunk-features trig --base-smoother jacobi
+
+# 5. Scaling: the same design at level 4 (4096 DoFs) and level 5 (16384 DoFs).
+#    p does not grow with n here on purpose -- that is the variable under test,
+#    and it is what the level-4 result turns on.
+"$PY" deeponet_smoother.py --data-dir level_data/L4 --out-dir results/L4_skip_jacobi_trig256 \
+    --n-train 512 --n-val 128 --n-test 50 --batch-size 16 --epochs 4000 \
+    --log-every 1000 --p 256 --trunk-features trig --base-smoother jacobi --vcycle
+
+"$PY" deeponet_smoother.py --data-dir level_data/L5 --out-dir results/L5_skip_jacobi_trig256 \
+    --n-train 256 --n-val 128 --n-test 50 --batch-size 8 --epochs 3000 \
+    --log-every 750 --p 256 --trunk-features trig --base-smoother jacobi --vcycle
 
 "$PY" tools/summarize_runs.py --glob 'results/*/metrics.json' \
     --csv results/summary.csv | tee results/summary.md
