@@ -4,3 +4,46 @@ DeepONet smoother -- surface (Laplace-Beltrami) multigrid level
 SCOPE: the branch consumes a fixed-length residual, so this model is bound
        to ONE DoF count and ONE DoF ordering -- no cross-mesh claim is made.
        Coefficient-space l^2 is NOT L^2(Gamma): no mass matrix is exported.
+
+Level data: level_data/L5
+  A           : 16384 x 16384, nnz 147456 (9.00/row)
+  symmetry    : max|A - A^T| = 0.000e+00 -> symmetric
+  definiteness: Jacobi-scaled spectrum [9.8775e-04, 2.6877e+00], cond 2.72e+03 -> SPD (sparse factorisation + Lanczos, no densification)
+  coordinates : (16384, 3), |x| in [1.0000, 3.0000]
+  kappa       : [1.1000, 2.1000]
+  ref. edge   : 0 constrained DoFs (uniform mesh)
+  prolongation: (16384, 4096)
+  MASS MATRIX : not exported -> L^2(Gamma) norms are unavailable; coefficient l^2 is reported instead
+  DoFs 16384 -> 128x128 periodic lattice, Nyquist = 64 modes/direction
+  trunk features: trig -> dim 4
+
+Hierarchy: 6 levels, DoFs [16, 64, 256, 1024, 4096, 16384]
+  Galerkin check per level: P^T A_l P versus the separately assembled A_{l-1}
+    level 1 -> 0 : max|P^T A P - A_H| = 1.411e+00  (relative 1.907e-01)
+    level 2 -> 1 : max|P^T A P - A_H| = 3.716e-01  (relative 4.404e-02)
+    level 3 -> 2 : max|P^T A P - A_H| = 7.569e-02  (relative 8.326e-03)
+    level 4 -> 3 : max|P^T A P - A_H| = 1.761e-02  (relative 1.899e-03)
+    level 5 -> 4 : max|P^T A P - A_H| = 4.342e-03  (relative 4.660e-04)
+  A nonzero difference is expected and is reported rather than hidden: on a
+  curved surface the coarse matrix is assembled with the isoparametric
+  mapping, and a coarse basis function is not reproduced exactly by the fine
+  cells' maps, so the hierarchy is not exactly Galerkin. Consequently the
+  coarse-complement loss builds Q from P^T A P (an exact A-orthogonal
+  projection), while the two-grid step uses the assembled A_H (what the
+  actual multigrid cycle uses).
+  coarse operator for the loss = P^T A P, densified for the Cholesky solve: (4096, 4096) (134.22 MB)
+  fine A_h remains sparse throughout
+
+Generating errors. train/val/test use independent seeds and have
+DISJOINT discrete signatures, so no base function -- nor a rescaled
+copy of one -- can appear in two splits.
+  train 256 | val 128 | test 50
+  cross-split signature overlaps: 0 (must be 0)
+    test[smooth     ]   10
+    test[multiscale ]   10
+    test[localized  ]   10
+    test[algebraic  ]   10
+    test[mixed      ]   10
+
+Model: DeepONet, branch 16384 -> 256, trunk 4 -> 256, depth 3
+  parameters 2229377 | dtype float64 | threads 4 | trunk trig

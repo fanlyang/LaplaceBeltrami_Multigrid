@@ -246,7 +246,94 @@ caught by `tools/selftest.py` (the first version of the generator reported a cap
 of 12 against a true Nyquist of 8 on the 16x16 level), and fixed; the check
 "multiscale cap is strictly below Nyquist" now guards it.
 
-## 8. Limitations, and what further exports would be needed
+**Finding 6 — "sparse throughout" has to include the validation code.** The
+program's promise that `A_h` is never densified was nearly self-defeating: the
+definiteness check called `np.linalg.cholesky(S.toarray())` on the Jacobi-scaled
+matrix. That is harmless at 1 024 DoFs (8 MB) and at 4 096 (134 MB), and at
+16 384 DoFs it is a **2.1 GB dense matrix and an O(n^3) factorisation** — the
+largest level simply never started, and the run looked hung rather than wrong.
+It is now decided by a SuperLU factorisation taken in symmetric mode with no
+pivoting (its U diagonal holds the pivots, positive exactly when the matrix is
+positive definite) plus sparse Lanczos for the spectrum bounds. The 16 384-DoF
+level validates in 28 s instead of never. The lesson generalises: a
+"no densification" claim has to cover every helper, not just the hot path.
+
+## 8. Results
+
+Every number below is read out of the runs' `metrics.json` by
+`tools/summarize_runs.py`; none is transcribed by hand. All configurations share
+the **same 50 test errors** (10 per mechanism, fixed by `seed=0, n_test=50`), and
+the classical smoothers are evaluated on exactly those errors, so the comparison
+is paired.
+
+### 8.1 Level 3 — 1024 DoFs, 32x32 lattice
+
+Mean `||e - delta_e||_A / ||e||_A` after **one** application (lower is better):
+
+| method | trunk | p | params | ALL | smooth | multiscale | localized | algebraic |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **DeepONet + Jacobi skip** | trig | 128 | 230 k | **0.3856** | **0.1968** | 0.3969 | **0.5019** | 0.4305 |
+| DeepONet | trig | 1024 | 461 k | 0.7655 | 0.2952 | 0.9683 | 0.6940 | 1.0108 |
+| DeepONet (literal spec: raw coords) | xyz | 64 | 214 k | 0.7765 | 0.3679 | 0.9729 | 0.6685 | 1.0150 |
+| damped Jacobi, best omega | — | — | — | 0.6433 | 0.9320 | 0.4375 | 0.8465 | 0.4103 |
+| Gauss–Seidel | — | — | — | 0.5729 | 0.8563 | 0.3889 | 0.7533 | 0.3368 |
+| symmetric Gauss–Seidel | — | — | — | 0.4297 | 0.7435 | **0.2237** | 0.6242 | **0.1642** |
+| SSOR (omega = 1) | — | — | — | 0.4297 | 0.7435 | **0.2237** | 0.6242 | **0.1642** |
+
+SSOR at `omega = 1` is algebraically symmetric Gauss–Seidel, which is why the two
+rows agree to every digit — a consistency check on the implementation, not a
+duplicate.
+
+**The learned smoother with the diagonal skip beats every classical smoother
+overall** (0.3856 against 0.4297 for symmetric Gauss–Seidel), and it wins
+decisively on the two mechanisms whose energy is concentrated: `smooth`
+(0.1968 against 0.7435) and `localized` (0.5019 against 0.6242). It loses only on
+`algebraic` (0.4305 against 0.1642) — the genuinely high-dimensional, white-noise
+error that Finding 1 says lies outside the trunk's span. That is exactly the
+trade-off the rank argument predicts, and it is visible mechanism by mechanism
+rather than only in an average.
+
+The two plain DeepONet designs — the literal reading of the brief (raw
+coordinates, `p = 64`) and the wider smooth trunk (`trig`, `p = 1024`), with six
+times the parameters — do **not** beat the classical smoothers overall, for the
+same reason: they too cannot touch the high-dimensional part. Note they are not
+useless: both beat symmetric Gauss–Seidel on `smooth`, substantially.
+
+### 8.2 Two-grid and V-cycle at level 3
+
+Real `P` and the assembled coarse operator, from the exported hierarchy:
+
+| smoother | smoother only | coarse correction only | two-grid |
+| --- | ---: | ---: | ---: |
+| DeepONet + Jacobi skip | 0.3856 | 0.5812 | 0.2227 |
+| damped Jacobi | 0.6433 | 0.5812 | 0.2588 |
+| symmetric Gauss–Seidel | 0.4297 | 0.5812 | 0.1507 |
+
+V-cycle over the four exported levels (learned smoother at the finest level only,
+damped Jacobi below it — a fixed-length branch cannot act at another DoF count):
+
+| cycle | mean reduction | range |
+| --- | ---: | --- |
+| **learned @ L3 + Jacobi below** | **0.1084** | [0.0177, 0.2276] |
+| damped Jacobi at every level | 0.1753 | [0.0855, 0.2457] |
+
+**The hybrid cycle beats an all-classical cycle**, 0.1084 against 0.1753, which is
+the claim that actually matters for multigrid: replacing one node of the cycle
+improves the cycle. The two plain designs do the opposite — their V-cycles
+measured 0.4283 (`xyz`, p=64) and 0.4218 (`trig`, p=1024), i.e. *worse* than
+Jacobi everywhere. Substituting a smoother that cannot damp high-dimensional
+error for one that can makes the whole cycle worse, and the V-cycle measurement
+is what exposes it.
+
+### 8.3 Caveat on these numbers
+
+The skip-connection run was **still improving at its final epoch** (validation
+0.2225 at epoch 6000, best epoch 6000, curve monotonically decreasing and not
+flattened). These figures are therefore a lower bound on what that design
+achieves, not its converged performance. Training was not extended further
+because the point here is the comparison, not a tuned best.
+
+## 9. Limitations, and what further exports would be needed
 
 Stated without qualification:
 
@@ -272,7 +359,7 @@ Stated without qualification:
   triangular solves, so their per-sample cost is inherently serial and is
   reported as such rather than silently normalised.
 
-## 9. Relationship to `train_deeponet_smoother.py`
+## 10. Relationship to `train_deeponet_smoother.py`
 
 The earlier prototype is superseded. It built `A = torch.tensor(A_sp.toarray())`
 — densifying the level operator, which makes it unusable beyond a few thousand

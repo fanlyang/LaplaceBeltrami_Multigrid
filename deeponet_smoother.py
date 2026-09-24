@@ -172,10 +172,47 @@ class LevelData:
     edge: Optional[np.ndarray]
     P: Optional[sp.csr_matrix]
     angles: np.ndarray
+    lam_min: Optional[float] = None
+    lam_max: Optional[float] = None
 
     @property
     def n(self) -> int:
         return self.A.shape[0]
+
+
+def sparse_spd_report(S: sp.csc_matrix) -> Tuple[bool, Optional[float], Optional[float]]:
+    """Decide whether a sparse symmetric matrix is positive definite WITHOUT
+    densifying it.
+
+    An earlier version of this file called ``np.linalg.cholesky(S.toarray())``,
+    which is fine at 1 024 DoFs (8 MB) and fatal at 16 384 (2.1 GB of dense
+    matrix plus an O(n^3) factorisation) -- the exact densification this program
+    promises not to do, and it silently made the largest level unrunnable.
+
+    Two sparse tests instead:
+      * definiteness from a SuperLU factorisation taken in symmetric mode with no
+        pivoting -- its U diagonal holds the pivots, which are all positive
+        exactly when S is positive definite;
+      * the extreme eigenvalues from sparse Lanczos, for reporting only.
+    """
+    is_spd = False
+    try:
+        lu = spla.splu(S.tocsc(), diag_pivot_thresh=0.0,
+                       options=dict(SymmetricMode=True))
+        is_spd = bool(np.all(lu.U.diagonal() > 0.0))
+    except RuntimeError:
+        is_spd = False                     # singular or structurally unsuitable
+
+    lam_max = lam_min = None
+    try:
+        lam_max = float(spla.eigsh(S, k=1, which="LA", return_eigenvectors=False)[0])
+    except Exception:
+        pass
+    try:
+        lam_min = float(spla.eigsh(S, k=1, which="SA", return_eigenvectors=False)[0])
+    except Exception:
+        pass
+    return is_spd, lam_min, lam_max
 
 
 def load_level(data_dir: str, verbose: bool = False) -> LevelData:
@@ -218,14 +255,15 @@ def load_level(data_dir: str, verbose: bool = False) -> LevelData:
         raise SystemExit("A has a non-positive diagonal entry (min %.3e)" % diag.min())
 
     # A = D^{1/2} (D^{-1/2} A D^{-1/2}) D^{1/2}, so A is SPD iff the
-    # Jacobi-scaled matrix is -- and that one is far better conditioned.
+    # Jacobi-scaled matrix is -- and that one is far better conditioned.  It is
+    # tested sparsely; see sparse_spd_report.
     d_is = 1.0 / np.sqrt(diag)
     S = (sp.diags(d_is) @ A @ sp.diags(d_is)).tocsc()
     S = ((S + S.T) * 0.5).tocsc()
-    try:
-        np.linalg.cholesky(S.toarray())
-    except np.linalg.LinAlgError as exc:
-        raise SystemExit("A is not positive definite: %s" % exc)
+    spd_ok, lam_min, lam_max = sparse_spd_report(S)
+    if not spd_ok:
+        raise SystemExit("A is not positive definite (smallest scaled eigenvalue %s)"
+                         % ("%.3e" % lam_min if lam_min is not None else "unavailable"))
 
     coeff = None
     c_path = os.path.join(data_dir, "coeff_values.npy")
@@ -248,7 +286,7 @@ def load_level(data_dir: str, verbose: bool = False) -> LevelData:
             raise SystemExit("prolongation has %d rows, A has %d" % (P.shape[0], A.shape[0]))
 
     return LevelData(A=A, coords=coords, coeff=coeff, edge=edge, P=P,
-                     angles=coords_to_angles(coords))
+                     angles=coords_to_angles(coords), lam_min=lam_min, lam_max=lam_max)
 
 
 # ---------------------------------------------------------------------------
@@ -1011,21 +1049,24 @@ def main(argv=None):
     log("       Coefficient-space l^2 is NOT L^2(Gamma): no mass matrix is exported.")
 
     # ---- load and inspect ------------------------------------------------
+    # load_level has already verified SPD sparsely and the spectrum bounds come
+    # with it; recomputing them here would densify an n x n matrix, which is what
+    # made the 16 384-DoF level unrunnable before.
     ld = load_level(args.data_dir, verbose=False)
     n_dof = ld.n
-    diag = ld.A.diagonal()
-    d_is = 1.0 / np.sqrt(diag)
-    S = ((sp.diags(d_is) @ ld.A @ sp.diags(d_is)).tocsc() +
-         (sp.diags(d_is) @ ld.A @ sp.diags(d_is)).tocsc().T) * 0.5
-    lam = np.linalg.eigvalsh(S.toarray())
     asym = abs(ld.A - ld.A.T)
     log("")
     log("Level data: %s" % args.data_dir)
     log("  A           : %d x %d, nnz %d (%.2f/row)" % (ld.A.shape[0], ld.A.shape[1],
                                                        ld.A.nnz, ld.A.nnz / n_dof))
     log("  symmetry    : max|A - A^T| = %.3e -> symmetric" % (float(asym.max()) if asym.nnz else 0.0))
-    log("  definiteness: Jacobi-scaled spectrum [%.4e, %.4e], cond %.2e -> SPD"
-        % (lam[0], lam[-1], lam[-1] / lam[0]))
+    if ld.lam_min is not None and ld.lam_max is not None:
+        log("  definiteness: Jacobi-scaled spectrum [%.4e, %.4e], cond %.2e -> SPD "
+            "(sparse factorisation + Lanczos, no densification)"
+            % (ld.lam_min, ld.lam_max, ld.lam_max / ld.lam_min))
+    else:
+        log("  definiteness: SPD (verified by sparse factorisation; spectrum bounds "
+            "unavailable)")
     log("  coordinates : %r, |x| in [%.4f, %.4f]"
         % (ld.coords.shape, np.linalg.norm(ld.coords, axis=1).min(),
            np.linalg.norm(ld.coords, axis=1).max()))

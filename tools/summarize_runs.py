@@ -35,7 +35,7 @@ def describe(m, path):
         "trunk": name,
         "p": mod.get("p"),
         "params": mod.get("parameters"),
-        "epochs": tr.get("epochs_run"),
+        "log_points": tr.get("epochs_run"),
         "best_epoch": tr.get("best_epoch"),
         "val_energy": tr.get("best_val_energy"),
         "n_dof": m.get("scope", {}).get("fixed_dof_count"),
@@ -71,11 +71,11 @@ def main():
     runs = [describe(load(p), p) for p in paths]
 
     print("# Run comparison\n")
-    print("| run | trunk | p | params | epochs | best epoch | val energy | train s |")
+    print("| run | trunk | p | params | log pts | best epoch | val energy | train s |")
     print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in runs:
         print("| %s | %s | %s | %s | %s | %s | %.5f | %.0f |" % (
-            r["run"], r["trunk"], r["p"], r["params"], r["epochs"], r["best_epoch"],
+            r["run"], r["trunk"], r["p"], r["params"], r["log_points"], r["best_epoch"],
             r["val_energy"], r["train_s"]))
 
     print("\n## Mean test energy ratio  ||e - de||_A / ||e||_A  (lower is better)\n")
