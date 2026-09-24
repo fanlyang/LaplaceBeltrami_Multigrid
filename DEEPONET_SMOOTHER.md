@@ -424,6 +424,12 @@ Stated without qualification:
   diagonal scaling and is batched; Gauss–Seidel and SSOR are sequential
   triangular solves, so their per-sample cost is inherently serial and is
   reported as such rather than silently normalised.
+* **The training budget was deliberately held roughly constant across levels**
+  (6000 epochs at level 3, 4000 at level 4; `p` grew only from 128 to 256 while
+  `n_dof` grew fourfold). That is precisely what the level-4 result in §8.3 turns
+  on, so read those numbers as "this configuration, unchanged, at 4096 DoFs" and
+  not as the best this design can do there. It is a measurement of
+  transferability, which is the question the fixed-DoF scope raises.
 
 ## 10. Relationship to `train_deeponet_smoother.py`
 
