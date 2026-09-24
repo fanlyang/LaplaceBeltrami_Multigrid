@@ -1,0 +1,1 @@
+run,trunk,p,params,epochs,val_energy,train_s,DeepONet_ALL,DeepONet_smooth,DeepONet_multiscale,DeepONet_localized,DeepONet_algebraic,jacobi_ALL,jacobi_smooth,jacobi_multiscale,jacobi_localized,jacobi_algebraic,sgs_ALL,sgs_smooth,sgs_multiscale,sgs_localized,sgs_algebraic

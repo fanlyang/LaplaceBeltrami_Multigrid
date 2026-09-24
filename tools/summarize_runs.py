@@ -73,12 +73,13 @@ def main():
     runs = [describe(load(p), p) for p in paths]
 
     print("# Run comparison\n")
-    print("| run | trunk | p | params | log pts | best epoch | last epoch | val energy | train s |")
-    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    # "log points" counts reported evaluations; best epoch is the one that mattered.
+    # A last_epoch column was tried and dropped: runs predating that key all show "-".
+    print("| run | trunk | p | params | log pts | best epoch | val energy | train s |")
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in runs:
-        print("| %s | %s | %s | %s | %s | %s | %s | %.5f | %.0f |" % (
+        print("| %s | %s | %s | %s | %s | %s | %.5f | %.0f |" % (
             r["run"], r["trunk"], r["p"], r["params"], r["log_points"], r["best_epoch"],
-            r["last_epoch"] if r["last_epoch"] is not None else "-",
             r["val_energy"], r["train_s"]))
 
     print("\n## Mean test energy ratio  ||e - de||_A / ||e||_A  (lower is better)\n")

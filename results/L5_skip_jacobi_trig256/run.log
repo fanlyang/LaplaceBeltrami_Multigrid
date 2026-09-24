@@ -50,3 +50,32 @@ Model: DeepONet, branch 16384 -> 256, trunk 4 -> 256, depth 3
   epoch      0  train 0.306646  val 0.298674  lr 1.00e-03
   epoch    750  train 0.351963  val 0.294191  lr 1.00e-03
   epoch   1500  train 0.311514  val 0.294085  lr 1.00e-03
+  epoch   2250  train 0.291863  val 0.293943  lr 1.00e-03
+  epoch   3000  train 0.260415  val 0.293757  lr 1.00e-03
+  training 1398.4 s (best epoch 3000, val 0.293757)
+  learned diagonal skip: omega = 0.71226 (initial 0.66667)
+
+Classical smoother reference: best damped Jacobi omega = 0.700 (mean ratio 0.66154)
+  omega sweep: {0.4: 0.7502, 0.5: 0.70346, 0.6: 0.67246, 0.6666666666666666: 0.663, 0.7: 0.66154, 0.8: 0.66859, 0.9: 0.68962}
+
+Mean A-energy reduction over the test set, ||e - de||_A / ||e||_A:
+  method               ALL      smooth   multiscale  localized  algebraic
+  DeepONet             0.6616   0.9944   0.4397      0.8451     0.4153  
+  damped Jacobi        0.6615   0.9956   0.4412      0.8473     0.4099  
+  Gauss-Seidel         0.6061   0.9883   0.4061      0.7535     0.3490  
+  sym. Gauss-Seidel    0.4699   0.9770   0.2293      0.6138     0.1641  
+  SSOR                 0.4699   0.9770   0.2293      0.6138     0.1641  
+
+Two-grid analysis with the REAL P and coarse operator from the exported hierarchy:
+  smoother DeepONet           only 0.6616 | coarse only 0.5465 | two-grid 0.2452
+  smoother damped Jacobi      only 0.6615 | coarse only 0.5465 | two-grid 0.2442
+  smoother sym. Gauss-Seidel  only 0.4699 | coarse only 0.5465 | two-grid 0.1267
+
+V-cycle over 6 exported levels. The learned smoother acts at level 5
+only; coarser levels use damped Jacobi, because a fixed-length branch
+cannot be applied at another DoF count or ordering.
+  learned@L5 + Jacobi below          mean 0.1751  [0.0769, 0.2620]
+  damped Jacobi everywhere           mean 0.1743  [0.0819, 0.2605]
+
+Wrote results/L5_skip_jacobi_trig256/{metrics.json,history.csv,splits.json,best_model.pt,run.log,plots/}
+total wall clock: 1491.9 s

@@ -212,6 +212,12 @@ distribution** relative to the trunk's span:
   `0.744`. The rank bound costs nothing there because there is nothing
   high-dimensional to represent.
 
+The scaling study in §8.3 sharpens this into a quantitative threshold. Holding
+the design fixed and letting `p/n` fall, the advantage is present at
+`p/n = 0.125` and entirely gone by `0.0625`, where the learned smoother collapses
+onto optimally damped Jacobi to three decimals. The rank ratio, not the level
+number, is what governs whether the method earns its keep.
+
 **Finding 2 — the trunk basis must contain the spatial frequencies of an
 oscillatory correction.** A trunk built on `sin/cos(xi), sin/cos(eta)` through an
 MLP has a *smooth* basis; a trunk built on the raw coordinates has the same
@@ -357,39 +363,57 @@ Jacobi everywhere. Substituting a smoother that cannot damp high-dimensional
 error for one that can makes the whole cycle worse, and the V-cycle measurement
 is what exposes it.
 
-### 8.3 Scaling: level 4 — 4096 DoFs, 64x64 lattice
+### 8.3 Scaling: levels 4 and 5 — the benefit tracks `p/n`
 
-The winning configuration from 8.1 (trig trunk, Jacobi skip) re-run unchanged at
-level 4 except `p = 256`, 4000 epochs, 512 training samples:
+The level-3 winning configuration (trig trunk, Jacobi skip) re-run unchanged at
+4096 and 16 384 DoFs. `p` was allowed to grow only from 128 to 256 while `n_dof`
+grew 16-fold, so the rank ratio `p/n` falls by 4x across the three — that is the
+variable this experiment isolates.
 
-| method | ALL | smooth | multiscale | localized | algebraic |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| DeepONet + Jacobi skip | 0.6409 | 0.9394 | 0.4543 | 0.8427 | 0.4249 |
-| damped Jacobi, best omega | 0.6433 | 0.9825 | 0.4426 | 0.8471 | 0.4066 |
-| Gauss–Seidel | 0.5878 | 0.9567 | 0.4017 | 0.7525 | 0.3453 |
-| symmetric Gauss–Seidel | 0.4476 | 0.9169 | 0.2291 | 0.6178 | 0.1647 |
+| level | n_dof | p | **p/n** | ALL | smooth | multiscale | localized | algebraic | learned omega |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| L3 | 1 024 | 128 | **0.125** | **0.3856** | **0.1968** | 0.3969 | 0.5019 | 0.4305 | ~0.70 |
+| L4 | 4 096 | 256 | 0.0625 | 0.6409 | 0.9394 | 0.4543 | 0.8427 | 0.4249 | 0.7080 |
+| L5 | 16 384 | 256 | 0.03125 | 0.6616 | 0.9944 | 0.4397 | 0.8451 | 0.4153 | 0.7123 |
 
-Two-grid: DeepONet 0.2491, damped Jacobi 0.2491, symmetric Gauss–Seidel 0.1372.
-V-cycle: learned @ L4 **0.1755** against damped Jacobi everywhere 0.1751.
+Classical reference on the same test errors at each level:
 
-**The design does not transfer to level 4 on the same budget, and the evidence
-says why.** Its two-grid reduction is identical to damped Jacobi's to four
-decimals (0.2491 in both), the V-cycle is a tie (0.1755 against 0.1751), and the
-learned skip coefficient settled at `omega = 0.7080` — essentially the best swept
-Jacobi value of 0.7. The network learned to reproduce an optimally damped Jacobi
-step and essentially nothing more: at level 4 the learned increment is
-negligible, which is why the DeepONet row sits on top of the Jacobi row on every
-mechanism.
+| level | damped Jacobi (best omega) | Gauss–Seidel | symmetric Gauss–Seidel |
+| --- | ---: | ---: | ---: |
+| L3 | 0.6433 | 0.5729 | 0.4297 |
+| L4 | 0.6433 | 0.5878 | 0.4476 |
+| L5 | 0.6615 | 0.6061 | 0.4699 |
 
-Two things changed at once and they point the same way. The rank ratio **halved**
-— `p/n = 0.0625` here against `0.125` at level 3 — so the trunk's span is a
-smaller fraction of the space it must cover; and the problem grew fourfold while
-the training budget did not (same 4000 epochs, batch 16 and 512 samples). This is
-the scaling consequence of the fixed-DoF scope measured rather than asserted: the
-configuration has to be re-tuned per level, and `p` should grow with `n_dof`
-rather than staying put. It is not evidence that the approach fails — the level-3
-result stands — but it is evidence that a single tuned configuration is not
-transferable, which is exactly what the fixed-length-branch caveat predicts.
+Two-grid and V-cycle for the learned smoother against damped Jacobi:
+
+| level | two-grid (learned) | two-grid (Jacobi) | V-cycle (learned @ L) | V-cycle (Jacobi everywhere) |
+| --- | ---: | ---: | ---: | ---: |
+| L3 | 0.2227 | 0.2588 | **0.1084** | 0.1753 |
+| L4 | 0.2491 | 0.2491 | 0.1755 | 0.1751 |
+| L5 | 0.2452 | 0.2442 | 0.1751 | 0.1743 |
+
+**The benefit does not survive the rank ratio falling, and the collapse is total
+rather than gradual.** At L4 and L5 the learned smoother becomes numerically
+indistinguishable from damped Jacobi: the two-grid reduction agrees to four
+decimals (0.2491/0.2491 and 0.2452/0.2442), the V-cycle is a tie (0.1755 against
+0.1751 and 0.1751 against 0.1743), the overall ratio matches to three decimals
+(0.6409 against 0.6433, 0.6616 against 0.6615), and the learned skip coefficient
+settles at `omega = 0.7080` / `0.7123` — essentially the best swept Jacobi value
+of 0.7. The network learned to reproduce an optimally damped Jacobi step and
+nothing more. Even the `smooth` column, where level 3 gained enormously
+(0.1968 against Jacobi's 0.9320), is now dead level (0.9944 against 0.9956).
+
+Two things changed together and both point the same way: `p/n` fell by 4x, and
+the problem grew 16-fold while the training budget did not (6000 epochs at L3
+against 3000 at L5). This is the scaling consequence of the fixed-DoF scope
+measured rather than asserted, and it sharpens Finding 1 into something usable:
+**the gain appears when the trunk's span covers a large enough fraction of the
+space — it is present at `p/n = 0.125` and gone by `0.0625`.** So the design
+should be re-tuned per level with `p` grown alongside `n_dof`, or the trunk
+replaced by something whose span is not a fixed fraction of `n_dof`. It is not
+evidence that the approach fails — the level-3 result stands — but a single tuned
+configuration is not transferable, which is exactly what the fixed-length-branch
+caveat predicts.
 
 ### 8.4 Caveat on these numbers
 
@@ -407,12 +431,14 @@ guessed. Same configuration the experiments use:
 
 | level | n_dof | p | batch | params | MACs/step | trunk share | ms/step | memory held |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| L3 | 1 024 | 128 | 32 | 230 401 | 4.35e7 | 78.3 % | 61.1 | 24.0 MB |
-| L4 | 4 096 | 256 | 16 | 656 513 | 2.29e8 | 88.7 % | 196.5 | 60.1 MB |
-| L5 | 16 384 | 256 | 8 | 2 229 377 | 8.64e8 | **94.1 %** | 503.7 | 164.3 MB |
+| L3 | 1 024 | 128 | 32 | 230 401 | 4.35e7 | 78.3 % | 27.1 | 24.0 MB |
+| L4 | 4 096 | 256 | 16 | 656 513 | 2.29e8 | 88.7 % | 92.7 | 60.1 MB |
+| L5 | 16 384 | 256 | 8 | 2 229 377 | 8.64e8 | **94.1 %** | 405.0 | 164.3 MB |
 
-L3 → L5: `n_dof` x16, params x9.7, FLOPs/step x19.9, wall-clock/step x8.2,
-memory x6.8. The raw output is committed as `results/profile_step.txt`.
+L3 → L5: `n_dof` x16, params x9.7, FLOPs/step x19.9, **wall-clock/step x15.0**,
+memory x6.8. Wall-clock tracks the operation count closely, which is the direct
+evidence that the runtime is compute-bound rather than memory- or
+bandwidth-bound. The raw output is committed as `results/profile_step.txt`.
 
 **The reason is the trunk, and it is a design consequence, not an accident.** The
 trunk is evaluated at *every DoF* to produce `T(x)`, so its cost is
@@ -433,8 +459,10 @@ Three things follow, and they explain the observed runtime:
   matters, because "it needs more memory" is the intuitive explanation and it is
   the wrong one.
 * **The step count does not fall with level.** The same ~3 000 epochs are needed,
-  so the per-step cost multiplies straight through: 3 000 x 0.48 s is about 24
-  minutes of pure step time before the evaluation phase.
+  so the per-step cost multiplies straight through: 3 000 x 0.4 s is about 20
+  minutes of pure step time before the evaluation phase. Level 5's wall clock was
+  roughly 40 minutes end to end for exactly this reason — not memory, and not a
+  stall.
 * **The trunk's input width is a first-order cost.** `--trunk-features trig` has 4
   features; `fourier-16` has 2 176, so its trunk's first layer is 544x larger.
   That is why the Fourier run was the slowest of the level-3 batch even though its
