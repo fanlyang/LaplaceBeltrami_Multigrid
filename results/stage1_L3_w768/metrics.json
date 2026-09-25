@@ -1,0 +1,239 @@
+{
+  "stage": "I -- learning the smoothing property",
+  "level": 3,
+  "n_dofs": 1024,
+  "n_coarse": 256,
+  "complement_dim": 768,
+  "coarse_operator": "Galerkin A_c = P^T A P",
+  "loss": "L_smooth = mean_i ||e_F - B(A e_F, X)||_A^2 / ||e_F||_A^2",
+  "training_inputs": "complement component ONLY; e_C is never used in training",
+  "headline_table": {
+    "jacobi": {
+      "mu_F": 0.6995948344051305,
+      "mu_C": 0.6733974534585097,
+      "median_rho_F": 0.6653394267549542,
+      "std_rho_F": 0.25979269183983383,
+      "p95_rho_F": 1.3035187884653943,
+      "max_rho_F": 1.4309518256655533,
+      "P_rhoF_gt_1": 0.138671875,
+      "median_rho_C": 0.6816436656324705,
+      "max_rho_C": 0.9780081345785601,
+      "P_rhoC_gt_1": 0.0
+    },
+    "damped_jacobi": {
+      "mu_F": 0.4248240105730518,
+      "mu_C": 0.7380362424145195,
+      "median_rho_F": 0.4064014027833356,
+      "std_rho_F": 0.05922758707514965,
+      "p95_rho_F": 0.5521594620986174,
+      "max_rho_F": 0.7229838079339548,
+      "P_rhoF_gt_1": 0.0,
+      "median_rho_C": 0.7500560242259093,
+      "max_rho_C": 0.9869124384681222,
+      "P_rhoC_gt_1": 0.0
+    },
+    "gauss_seidel": {
+      "mu_F": 0.3664026546803745,
+      "mu_C": 0.6179789029537273,
+      "median_rho_F": 0.35108861436015393,
+      "std_rho_F": 0.04757644024127091,
+      "p95_rho_F": 0.45132367891897845,
+      "max_rho_F": 0.5657783702716991,
+      "P_rhoF_gt_1": 0.0,
+      "median_rho_C": 0.6074779456333854,
+      "max_rho_C": 0.9621093670782243,
+      "P_rhoC_gt_1": 0.0
+    },
+    "symmetric_gs": {
+      "mu_F": 0.18888383466038877,
+      "mu_C": 0.4695137821706279,
+      "median_rho_F": 0.17432051437306836,
+      "std_rho_F": 0.03970187626755462,
+      "p95_rho_F": 0.2605975512649869,
+      "max_rho_F": 0.384842279801191,
+      "P_rhoF_gt_1": 0.0,
+      "median_rho_C": 0.4546457581008281,
+      "max_rho_C": 0.9294355217097339,
+      "P_rhoC_gt_1": 0.0
+    },
+    "ssor": {
+      "mu_F": 0.18888383466038877,
+      "mu_C": 0.4695137821706279,
+      "median_rho_F": 0.17432051437306836,
+      "std_rho_F": 0.03970187626755462,
+      "p95_rho_F": 0.2605975512649869,
+      "max_rho_F": 0.384842279801191,
+      "P_rhoF_gt_1": 0.0,
+      "median_rho_C": 0.4546457581008281,
+      "max_rho_C": 0.9294355217097339,
+      "P_rhoC_gt_1": 0.0
+    },
+    "deeponet": {
+      "mu_F": 0.14561643803418828,
+      "mu_C": 1.0928497236609025,
+      "median_rho_F": 0.13344592107365374,
+      "std_rho_F": 0.08857857650103473,
+      "p95_rho_F": 0.2694705942831209,
+      "max_rho_F": 0.3198121662809239,
+      "P_rhoF_gt_1": 0.0,
+      "median_rho_C": 1.0974771229019082,
+      "max_rho_C": 1.1970215146471619,
+      "P_rhoC_gt_1": 1.0
+    }
+  },
+  "reference_exact_solve": {
+    "mu_F": 0.0,
+    "mu_C": 0.0,
+    "median_rho_F": 0.0,
+    "std_rho_F": 0.0,
+    "p95_rho_F": 0.0,
+    "max_rho_F": 0.0,
+    "P_rhoF_gt_1": 0.0,
+    "median_rho_C": 0.0,
+    "max_rho_C": 0.0,
+    "P_rhoC_gt_1": 0.0
+  },
+  "ridge_diagnostic": {
+    "lambda": 1e-08,
+    "val_mu_F": 3.7424915632355714e-09,
+    "train_mu_F": 2.052084668672493e-09,
+    "grid": {
+      "1e-08": 3.7424915632355714e-09,
+      "1e-06": 3.742485149452793e-07,
+      "0.0001": 3.741874582749446e-05,
+      "0.01": 0.0036822448459101252,
+      "0.1": 0.03242014974472354,
+      "1.0": 0.17249584072944255
+    }
+  },
+  "ridge_table": {
+    "mu_F": 3.6765763873438374e-09,
+    "mu_C": 1.0249196168600996,
+    "median_rho_F": 3.764405869833559e-09,
+    "std_rho_F": 1.8273254181740302e-09,
+    "p95_rho_F": 5.972524145253154e-09,
+    "max_rho_F": 7.878609586677057e-09,
+    "P_rhoF_gt_1": 0.0,
+    "median_rho_C": 1.0264139502757232,
+    "max_rho_C": 1.0531366684901606,
+    "P_rhoC_gt_1": 1.0
+  },
+  "split_sizes": {
+    "train": 2048,
+    "val": 512,
+    "test": 1024
+  },
+  "split_frac_F": {
+    "train": {
+      "min": 0.0024428475648586687,
+      "mean": 0.4705555882817271,
+      "max": 0.9606464177498256
+    },
+    "val": {
+      "min": 0.002440181231198954,
+      "mean": 0.4804778107143236,
+      "max": 0.951211706987638
+    },
+    "test": {
+      "min": 0.002529278730561926,
+      "mean": 0.4707884542558898,
+      "max": 0.9496353315973325
+    }
+  },
+  "projector_check": {
+    "max_rel_eC_A_eF": 1.428234221315885e-15,
+    "max_rel_PtA_eF": 2.5516246528790664e-14,
+    "max_rel_energy_pythagoras": 4.378442053365457e-15
+  },
+  "training_residual_in_ker_Pt_max": 2.5454306195861834e-14,
+  "coarse_residual_Pt_min": 1.019996143274548,
+  "trunk": {
+    "mode": "fourier",
+    "modes": 16,
+    "p": 1024,
+    "dim": 2176,
+    "width": 1024,
+    "depth": "frozen/orthonormal",
+    "frozen": true,
+    "span_is_Rn": true,
+    "rank_T": 1024,
+    "best_possible_mu_F": 1.447578534588019e-06,
+    "note": "floor on mu_F for ANY branch against the trained trunk; the trunk span can be the binding constraint, not the net"
+  },
+  "model": {
+    "p": 1024,
+    "width": 768,
+    "depth": 4,
+    "base_smoother": "none",
+    "parameters": 3342336,
+    "homogeneous_in_r": true,
+    "normalisation": "branch sees r/||r||_2; output rescaled by ||r||_2"
+  },
+  "training": {
+    "epochs_requested": 1200,
+    "epochs_run": 1200,
+    "best_epoch": 1199,
+    "best_val_mu_F": 0.17008967058628413,
+    "batch": 256,
+    "lr": 0.003,
+    "seed": 20260925,
+    "model_init_seeded_before_construction": true,
+    "wall_seconds": 2048.089966599946
+  },
+  "damped_jacobi_omega": {
+    "omega": 0.5764255095782459,
+    "val_mu_F": 0.42891668444337105,
+    "stability_limit": 0.755967881414093,
+    "sweep": {
+      "0.03779839407070465": 0.9489673186155879,
+      "0.09764585134932033": 0.8693349856734822,
+      "0.15749330862793604": 0.7915492440456959,
+      "0.21734076590655171": 0.7162905800394523,
+      "0.2771882231851674": 0.644619217171599,
+      "0.3370356804637831": 0.578279295929117,
+      "0.39688313774239886": 0.5202633777814971,
+      "0.4567305950210146": 0.47475861209266745,
+      "0.5165780522996303": 0.4441525618920614,
+      "0.5764255095782459": 0.42891668444337105,
+      "0.6362729668568616": 0.42933682766861214,
+      "0.6961204241354774": 0.4451113783997444,
+      "0.755967881414093": 0.4749482915459753
+    }
+  },
+  "per_mechanism_mu_F": {
+    "deeponet": {
+      "smooth": 0.012923153724498232,
+      "multiscale": 0.09777110213763,
+      "localized": 0.06268102354158443,
+      "algebraic": 0.250250544562043,
+      "mixed": 0.18532642007693761
+    },
+    "damped_jacobi": {
+      "smooth": 0.4553701297950522,
+      "multiscale": 0.4344741412882279,
+      "localized": 0.4461482061528498,
+      "algebraic": 0.39613275316154345,
+      "mixed": 0.4166167135466853
+    },
+    "gauss_seidel": {
+      "smooth": 0.40293366903610744,
+      "multiscale": 0.3710527070904613,
+      "localized": 0.41551866578072294,
+      "algebraic": 0.3324904757547851,
+      "mixed": 0.3523064299452298
+    }
+  },
+  "scope": {
+    "one_smoothing_step": true,
+    "no_coarse_grid_correction_in_loss": true,
+    "no_vcycle": "Stage III",
+    "bound_to_one_dof_count_and_ordering": true,
+    "norms": "v^T A v on coefficient vectors; M_h is not exported, so no continuous L^2(Gamma) norm is available"
+  },
+  "wall_seconds": 2092.320485000033,
+  "versions": {
+    "numpy": "2.2.6",
+    "scipy": "1.15.3",
+    "torch": "2.14.0+cpu"
+  }
+}

@@ -1,0 +1,68 @@
+Stage I -- learning the smoothing property (level 3)
+==========================================================================
+  data-dir level_data/L3
+  scope: ONE smoothing step; complement-only training; no coarse-grid correction in the loss
+  n = 1024 DoFs (32x32 lattice, Nyquist 16), A nnz = 9216
+  coarse space: n_c = 256 -> complement dim = 768
+  lambda_min(A_c) = 0.274290, A_c symmetric to 0.00e+00
+
+[1/5] drawing errors and splitting them into e_C + e_F
+  train N=2048   frac_F: min 0.0024  mean 0.4706  max 0.9606   (dropped 0)
+  val   N= 512   frac_F: min 0.0024  mean 0.4805  max 0.9512   (dropped 0)
+  test  N=1024   frac_F: min 0.0025  mean 0.4708  max 0.9496   (dropped 0)
+  projector identities on the test split (relative residuals):
+    max_rel_eC_A_eF              1.428e-15
+    max_rel_PtA_eF               2.552e-14
+    max_rel_energy_pythagoras    4.378e-15
+  training residuals r_F = A e_F:  max ||P^T r_F||/||r_F|| = 2.545e-14  (~0)
+  coarse residuals    r_C = A e_C:  min ||P^T r_C||/||r_C|| = 1.020e+00  (O(1))
+
+[2/5] building the network
+  trunk fourier -> dim 2176 ; trunk width 1024 depth frozen/orthonormal ; frozen = True
+  branch width 768 depth 4 ; p = 1024 ; base = none
+  parameters 3342336 ; correction rank <= p = 1024 ; complement dim = 768
+
+[3/5] training on the complement component only
+    epoch     0  train 14.912845  val mean sq rho_F 35.649027  *
+    epoch   100  train 0.170960  val mean sq rho_F 0.235605
+    epoch   200  train 0.120319  val mean sq rho_F 0.167622
+    epoch   300  train 0.092174  val mean sq rho_F 0.133343  *
+    epoch   400  train 0.062940  val mean sq rho_F 0.099762
+    epoch   500  train 0.040362  val mean sq rho_F 0.072609
+    epoch   600  train 0.022049  val mean sq rho_F 0.051372  *
+    epoch   700  train 0.012656  val mean sq rho_F 0.040581  *
+    epoch   800  train 0.007477  val mean sq rho_F 0.033532  *
+    epoch   900  train 0.006207  val mean sq rho_F 0.031452
+    epoch  1000  train 0.005796  val mean sq rho_F 0.030377
+    epoch  1100  train 0.005475  val mean sq rho_F 0.029267  *
+    epoch  1199  train 0.005371  val mean sq rho_F 0.028930  *
+  best validation mu_F = 0.170090 at epoch 1199 (1200 epochs run, 2048.1 s)
+
+[4/5] evaluating every smoother on the SAME test errors
+  damped Jacobi: omega = 0.576426 chosen on validation mu_F (stability limit 0.755968)
+  ridge diagnostic: lambda = 1e-08 -> mu_F 0.000000 (train 0.000000, val 0.000000)
+  trunk span: rank(T) = 1024 of p = 1024 -> best-possible mu_F >= 0.000001
+
+[5/5] writing results
+
+Reduction factors on 1024 test errors (level 3, n = 1024)
+smoother               mu_F     mu_C max rho_F  P(rho_F>1) med rho_F sd rho_F p95 rho_F mu_C/mu_F
+----------------------------------------------------------------------------------------------------
+Jacobi               0.6996   0.6734    1.4310      0.1387    0.6653   0.2598   1.3035      0.96
+Damped Jacobi        0.4248   0.7380    0.7230      0.0000    0.4064   0.0592   0.5522      1.74
+Gauss-Seidel         0.3664   0.6180    0.5658      0.0000    0.3511   0.0476   0.4513      1.69
+Symmetric GS         0.1889   0.4695    0.3848      0.0000    0.1743   0.0397   0.2606      2.49
+SSOR                 0.1889   0.4695    0.3848      0.0000    0.1743   0.0397   0.2606      2.49
+DeepONet             0.1456   1.0928    0.3198      0.0000    0.1334   0.0886   0.2695      7.50
+----------------------------------------------------------------------------------------------------
+A^-1 (reference)     0.0000   0.0000    0.0000      0.0000    0.0000   0.0000   0.0000      0.00
+ridge (diagnostic)   0.0000   1.0249    0.0000      0.0000    0.0000   0.0000   0.0000 278770113.52
+
+Does the DeepONet learn preferential reduction of the complement?
+  DeepONet      mu_F = 0.1456   mu_C = 1.0928   ratio mu_C/mu_F = 7.50
+  Damped Jacobi mu_F = 0.4248   mu_C = 0.7380   ratio mu_C/mu_F = 1.74
+  (ratio > 1 == the complement is reduced more than the coarse component, i.e. selective)
+  floor imposed by the trained trunk's span: mu_F >= 0.0000
+
+Wrote results/stage1_L3_w768/{metrics.json,history.csv,run.log,plots/}
+total wall clock: 2092.3 s

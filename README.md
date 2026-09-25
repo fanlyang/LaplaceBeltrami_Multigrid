@@ -485,6 +485,24 @@ organised in numbered sections:
     CSV writer.
 13. **Driver** — `run()`, and `main()` at the bottom.
 
+### 9.1 The learned smoother
+
+The C++ solver exports its per-level operators (`export_level_data`); the Python
+side learns a residual-to-correction map from them.
+
+| file | what it is |
+|---|---|
+| `deeponet_smoother.py` | the DeepONet smoother: training, evaluation, classical baselines and the V-cycle. Documented in `DEEPONET_SMOOTHER.md` |
+| **`stage1_smoothing_property.py`** | **Stage I** — trains on the Galerkin coarse-space *complement* only and measures whether the learned step is selective. Documented in `STAGE1_SMOOTHING_PROPERTY.md` |
+| `tools/trunk_reach.py` | how far into the complement a given trunk can reach — the floor on $\mu_F$ that no branch can beat |
+| `tools/branch_rank_probe.py` | the same bound for the *branch*: the best rank-$k$ linear map on the same data |
+| `tools/convert_level_data.py` | turns the solver's `.coo`/`.txt` dumps into the `.npz`/`.npy` the trainers read |
+
+```bash
+python stage1_smoothing_property.py --selftest          # projector + smoother checks
+python stage1_smoothing_property.py --data-dir level_data/L3 --out-dir results/stage1_L3
+```
+
 ---
 
 ## 10. Reference
