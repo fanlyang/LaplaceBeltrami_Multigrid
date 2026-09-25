@@ -15,7 +15,8 @@ therefore puts a floor under the smoothing factor that **no branch can beat**:
 
 A run whose mu_F sits on that floor has measured its trunk, not its smoother.
 This tool computes the floor for a family of trunks *before* training, which is
-what makes the trunk geometry a decision rather than an accident.
+what makes the trunk geometry a decision rather than an accident.  Stage I
+reports the same floor for the trunk it actually ends up with.
 
 The interesting result on the exported torus hierarchy is that the floor is
 governed by the trunk's highest spatial frequency, and the value it has to reach
@@ -29,8 +30,7 @@ is the **fine** lattice's Nyquist, not the coarse one:
 For ``level_data/L3`` (32x32 fine lattice, 16x16 coarse, Nyquist 16 and 8) the
 floor falls from ~0.99 at K=4 to ~0.0007 at K=16, and nothing below K=16 is
 usable.  A hidden MLP layer narrows this further: ``rank(T) <= trunk width``, so
-a trunk of width 256 cannot exceed rank 257 however many modes it is fed, which
-holds the floor near 0.75 on its own.
+a trunk of width 256 cannot exceed rank 257 however many modes it is fed.
 
 Usage
 -----
@@ -51,30 +51,14 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from deeponet_smoother import load_level, trunk_features  # noqa: E402
 from stage1_smoothing_property import (  # noqa: E402
     GalerkinCoarseSpace,
     build_split,
-    energy_rows,
+    load_level,
     scaled_plan,
+    trunk_features,
+    trunk_floor,
 )
-
-
-def floor_for(T: np.ndarray, EF: np.ndarray, A, reg_rel: float = 1e-12) -> tuple:
-    """Best possible ``mu_F`` for any branch against this trunk.
-
-    The best A-norm approximation of each ``e_F`` inside ``span(T)`` solves the
-    normal equations ``(T^T A T) c = T^T A e_F``.  Returns the mean of
-    ``sqrt(1 - reach)`` and ``rank(T)``.
-    """
-    TtAT = T.T @ np.asarray(A @ T)
-    p = T.shape[1]
-    reg = reg_rel * np.trace(TtAT) / max(p, 1) * np.eye(p)
-    coef = np.linalg.solve(TtAT + reg, T.T @ np.asarray(A @ EF.T))
-    approx = (T @ coef).T
-    reach = energy_rows(approx, A) / np.maximum(energy_rows(EF, A), 1e-300)
-    return (float(np.mean(np.sqrt(np.maximum(1.0 - reach, 0.0)))),
-            int(np.linalg.matrix_rank(T, tol=1e-10)))
 
 
 def main() -> int:
@@ -111,22 +95,22 @@ def main() -> int:
     print("  %-34s %6s %6s %12s" % ("trunk", "dim", "rank", "floor on mu_F"))
     print("  " + "-" * 62)
 
-    rows = []
+    best = None
     for K in args.modes:
         F = trunk_features(angles, "fourier", coords, K)
-        f, r = floor_for(F, test.EF, A)
-        rows.append(("fourier K=%d" % K, F.shape[1], r, f))
-        print("  %-34s %6d %6d %12.6f" % ("fourier K=%d" % K, F.shape[1], r, f))
+        floor, rank = trunk_floor(F, test.EF, A)
+        print("  %-34s %6d %6d %12.6f" % ("fourier K=%d" % K, F.shape[1], rank, floor))
+        if best is None or floor < best[1]:
+            best = ("fourier K=%d" % K, floor)
 
     if args.coords_only:
         for mode in ("xyz", "angles", "trig"):
             F = trunk_features(angles, mode, coords, 0)
-            f, r = floor_for(F, test.EF, A)
-            print("  %-34s %6d %6d %12.6f" % (mode, F.shape[1], r, f))
+            floor, rank = trunk_floor(F, test.EF, A)
+            print("  %-34s %6d %6d %12.6f" % (mode, F.shape[1], rank, floor))
 
-    best = min(rows, key=lambda t: t[3])
     print()
-    print("  lowest floor: %s -> %.6f" % (best[0], best[3]))
+    print("  lowest floor: %s -> %.6f" % best)
     print("  A trunk whose floor is not small has made the trunk, not the branch, "
           "the subject of the measurement.")
     return 0

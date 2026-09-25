@@ -8,6 +8,11 @@ Stage II   L_TG              interaction with coarse-grid correction
 Stage III  recursive V-cycle performance in the complete multigrid solver
 ```
 
+**Only Stage I is on this branch.** Stages II and III are named above because
+they are what the "I" refers to and because they explain why nothing here runs a
+V-cycle; they are not implemented here and nothing in this document depends on
+them.
+
 Stage I asks one question and answers it with one table:
 
 > **Does the DeepONet learn preferential reduction of the Galerkin
@@ -261,7 +266,8 @@ The reason is structural. $\operatorname{range}(P)$ is what the level-2 lattice
 complement is very nearly the band **between the coarse and the fine Nyquist** —
 here modes $8 \lesssim |k| \le 16$. A Fourier trunk needs modes up to the fine
 Nyquist 16 before it can span that band, and nothing below $K=16$ is usable.
-This is the quantitative form of Finding 2 in `DEEPONET_SMOOTHER.md`.
+That is the structural statement of why the trunk's *frequency content* and not
+merely its size decides whether it binds.
 
 A hidden MLP layer narrows this further, because $\operatorname{rank}(T) \le$
 trunk width. A trunk of width 256 cannot exceed rank 257 however many modes it is
@@ -506,17 +512,18 @@ python stage1_smoothing_property.py --selftest
 python tools/trunk_reach.py       --data-dir level_data/L3
 python tools/branch_rank_probe.py --data-dir level_data/L3
 
-# the headline run (branch width 256 -> results/stage1_L3)
-python stage1_smoothing_property.py \
-    --data-dir level_data/L3 --out-dir results/stage1_L3 \
-    --epochs 1200 --batch 256 --lr 3e-3 --patience 300 \
-    --p 1024 --width 256 --depth 4 --trunk-modes 16
-
-# the capacity-adequate run (branch width 768 -> results/stage1_L3_w768)
+# THE run -- branch width 768, which is what answers the question (~35 min)
 python stage1_smoothing_property.py \
     --data-dir level_data/L3 --out-dir results/stage1_L3_w768 \
     --epochs 1200 --batch 256 --lr 3e-3 --patience 300 \
     --p 1024 --width 768 --depth 4 --trunk-modes 16
+
+# the under-capacity comparison -- branch width 256 (~17 min).  Kept because it
+# is what a confident wrong answer looks like; see section 6.3.
+python stage1_smoothing_property.py \
+    --data-dir level_data/L3 --out-dir results/stage1_L3 \
+    --epochs 1200 --batch 256 --lr 3e-3 --patience 300 \
+    --p 1024 --width 256 --depth 4 --trunk-modes 16
 
 # redraw the metrics-only figures without retraining
 python stage1_smoothing_property.py --replot --out-dir results/stage1_L3

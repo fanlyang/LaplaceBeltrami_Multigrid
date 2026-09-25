@@ -152,22 +152,26 @@
     "modes": 16,
     "p": 1024,
     "dim": 2176,
-    "width": 1024,
-    "depth": "frozen/orthonormal",
+    "description": "1024, frozen/orthonormal",
     "frozen": true,
     "span_is_Rn": true,
     "rank_T": 1024,
     "best_possible_mu_F": 1.447578534588019e-06,
-    "note": "floor on mu_F for ANY branch against the trained trunk; the trunk span can be the binding constraint, not the net"
+    "note": "floor on mu_F for ANY branch against this trunk; the trunk span can be the binding constraint, not the net"
   },
   "model": {
     "p": 1024,
-    "width": 256,
+    "branch_width": 256,
     "depth": 4,
     "base_smoother": "none",
     "parameters": 720896,
     "homogeneous_in_r": true,
-    "normalisation": "branch sees r/||r||_2; output rescaled by ||r||_2"
+    "normalisation": "branch sees r/||r||_2; output rescaled by ||r||_2",
+    "branch_width_vs_complement": {
+      "branch_width": 256,
+      "complement_dim": 768,
+      "can_represent_exact_correction": false
+    }
   },
   "training": {
     "epochs_requested": 1200,
@@ -178,7 +182,7 @@
     "lr": 0.003,
     "seed": 20260925,
     "model_init_seeded_before_construction": true,
-    "wall_seconds": 971.2536402000114
+    "wall_seconds": 875.4253974000458
   },
   "damped_jacobi_omega": {
     "omega": 0.5764255095782459,
@@ -226,11 +230,11 @@
   "scope": {
     "one_smoothing_step": true,
     "no_coarse_grid_correction_in_loss": true,
-    "no_vcycle": "Stage III",
+    "no_vcycle": "not in this stage",
     "bound_to_one_dof_count_and_ordering": true,
     "norms": "v^T A v on coefficient vectors; M_h is not exported, so no continuous L^2(Gamma) norm is available"
   },
-  "wall_seconds": 1015.189920600038,
+  "wall_seconds": 917.7060406999663,
   "versions": {
     "numpy": "2.2.6",
     "scipy": "1.15.3",

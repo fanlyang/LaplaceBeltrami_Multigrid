@@ -1,2 +1,0 @@
-# level dofs matrix_rows stored_entries
-0 16 16 144

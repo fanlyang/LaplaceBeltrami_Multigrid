@@ -43,11 +43,11 @@ ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from deeponet_smoother import load_level  # noqa: E402
 from stage1_smoothing_property import (  # noqa: E402
     GalerkinCoarseSpace,
     build_split,
     energy_rows,
+    load_level,
     rho_of,
     scaled_plan,
 )

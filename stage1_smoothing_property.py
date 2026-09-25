@@ -5,7 +5,8 @@
 The question
 ------------
 A smoother exists to reduce the part of the algebraic error that a coarse-grid
-correction cannot reach.  On one fixed level, with the Galerkin coarse operator
+correction cannot reach.  On one fixed multigrid level, with the Galerkin coarse
+operator
 
     A_c = P^T A P ,   Pi_C = P (P^T A P)^{-1} P^T A ,   Pi_F = I - Pi_C ,
 
@@ -47,50 +48,55 @@ at the origin.  Stage I is therefore a genuine extrapolation question -- the
 network must extend a function it learned on ``ker(P^T)`` to a subspace it has
 never seen a sample from -- and not a memorisation question.
 
-The confound that is measured, not hidden
------------------------------------------
-The DeepONet output is ``delta_e = sum_k b_k(r) T_k(x)``, so for a fixed trunk the
-correction lies in the ``p``-dimensional span of the trunk's output vectors
-*whatever the branch returns*.  A small ``mu_F`` can therefore be a statement
-about the trunk rather than about smoothing.  This program bounds that confound
-instead of ignoring it: for the *trained* trunk it reports the best A-norm
-approximation of ``e_F`` attainable inside ``span(T)``, and the implied floor
+Both rank ceilings are measured, not assumed
+--------------------------------------------
+The DeepONet output is ``delta_e = sum_k b_k(r) T_k(x)``.  That gives the model
+**two** rank ceilings, and either can silently become the thing under measurement:
 
-    mu_F  >=  E[ sqrt(1 - reach_F(e_F)) ] ,
+* **the trunk.**  For a fixed trunk the correction lies in ``span(T)`` whatever
+  the branch returns, so a small ``mu_F`` can be a statement about the trunk
+  rather than about smoothing.  ``--trunk-freeze fourier-orth`` (the default)
+  freezes ``T`` to an orthonormal basis of the coordinate features, which spans
+  ``R^n`` here, making the floor on ``mu_F`` exactly zero and the trunk provably
+  irrelevant.  ``tools/trunk_reach.py`` computes that floor for any trunk.
+* **the branch.**  The branch narrows to ``width`` units before widening again,
+  so its Jacobian factors through ``R^width``; the complement is ``n - n_c``
+  dimensional.  A branch narrower than that cannot represent the exact
+  correction, whatever the optimiser does.  ``tools/branch_rank_probe.py``
+  computes the best linear map of rank ``<= k`` on the same data -- the reference
+  curve a width-``k`` branch is measured against.
 
-which is the best any branch could have achieved against that trunk.  Set
-``--p`` to ``n`` and the floor becomes vacuous.  DEEPONET_SMOOTHER.md Finding 1
-(trunk *span*, not trunk *size*, governs what is reachable) is why this
-diagnostic is necessary rather than decorative.
+This is not a hypothetical hazard.  At ``--width 256`` with ``n - n_c = 768`` the
+network lands within 1% of the best rank-256 *linear* map, i.e. it measured its
+own width; at ``--width 768`` the same architecture is the best single-step
+method in the table.  Both runs are committed, and the report says so.
 
-Ridge diagnostic
-----------------
-A ridge regression is fitted to the *same* training pairs (residual ->
-complement error), with its regularisation chosen on the same validation metric
-the network uses, and evaluated on the same test errors.  It answers what the
-network alone cannot: is selectivity something the DeepONet learned, or does
-*any* map fitted to this data inherit it?  It is reported as a diagnostic and
-kept out of the headline table, which holds only the classical smoothers and the
-network.
-
-Network and damped-Jacobi each get their tuned parameter chosen on validation and
-scored on test, so the comparison is symmetric.
-
-What this program is not
-------------------------
+Scope -- what this program is not
+---------------------------------
 * One smoothing step is measured.  No V-cycle is run and no claim is made about
-  the complete multigrid solver -- that is Stage III.
-* No coarse-grid correction is applied during training or evaluation; the loss
-  deliberately stops after the smoothing step.
+  the complete multigrid solver.
+* No coarse-grid correction appears in the loss or in the evaluation; the step
+  deliberately stops after smoothing.
 * The operator is bound to one DoF count and one DoF ordering; ``n`` is baked
   into the first branch layer.
 * Every norm is ``v^T A v`` on coefficient vectors.  ``M_h`` is not exported, so
-  no continuous ``L^2(Gamma)`` norm is available or claimed.
+  no continuous ``L^2(Gamma)`` norm is available and none is claimed.
+* The network does not learn a discretisation-independent operator, and no
+  cross-mesh generalisation is claimed or measured.
+
+Provenance
+----------
+``A_l``, ``P_l`` and the DoF coordinates come from the deal.II surface
+(Laplace-Beltrami) solver in ``src/main.cpp``, which writes them with
+``export_level_data``; ``tools/convert_level_data.py`` converts the dumps into
+the ``.npz``/``.npy`` this program reads.  Everything else needed to run Stage I
+is in this file.
 
 Usage
 -----
     python stage1_smoothing_property.py --selftest
     python stage1_smoothing_property.py --data-dir level_data/L3 --out-dir results/stage1_L3
+    python stage1_smoothing_property.py --replot --out-dir results/stage1_L3
 """
 
 from __future__ import annotations
@@ -100,8 +106,9 @@ import json
 import os
 import sys
 import time
+import zlib
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -115,31 +122,539 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
-# Reused, not reimplemented: the geometry helpers, the sparse-matvec autograd,
-# the error generators and the classical smoothers already exist on this branch
-# and are the objects the other results were measured with.  Sharing the
-# implementations is what makes these numbers comparable to those.
-from deeponet_smoother import (  # noqa: E402
-    ClassicalSmoothers,
-    DeepONetSmoother,
-    MECHANISMS,
-    Trunk,
-    draw_sample,
-    energy_norm,
-    load_level,
-    normalise_and_residualise,
-    stable_seed,
-    to_torch_sparse,
-    trunk_features,
-)
+
+def log(msg: str = "") -> None:
+    print(msg, flush=True)
+
+
+# ===========================================================================
+# PART A -- machinery: geometry, level data, error generators, smoothers, model
+# ===========================================================================
+
 
 # ---------------------------------------------------------------------------
-# Palette -- the validated set already used by bench/plot.py, kept identical so a
-# figure from here can sit beside a figure from there.  Fixed slot per method,
-# never keyed by rank and never cycled.
+# A1. Torus geometry -- must match TorusGeometry in src/main.cpp
+# ---------------------------------------------------------------------------
+R_MAJOR = 2.0
+R_MINOR = 1.0
+
+
+def coords_to_angles(X: np.ndarray) -> np.ndarray:
+    """Torus support points (n,3) -> parameter angles (n,2) = (xi, eta).
+
+    Inverts  x = (R + r cos eta) cos xi,  y = r sin eta,
+             z = (R + r cos eta) sin xi
+    exactly.  xi and eta are both 2*pi-periodic, so any trigonometric polynomial
+    in them is a well-defined function on the torus with no seam.
+    """
+    x, y, z = X[:, 0], X[:, 1], X[:, 2]
+    rho = np.sqrt(x * x + z * z)
+    xi = np.arctan2(z, x)
+    eta = np.arctan2(y, rho - R_MAJOR)
+    return np.stack([xi, eta], axis=1)
+
+
+def trunk_features(angles: np.ndarray, mode: str, coords: np.ndarray,
+                   n_modes: int = 0) -> np.ndarray:
+    """The trunk's input: a fixed feature map of the DoF coordinates.
+
+    ``trig`` encodes the torus periodicity exactly (sin/cos of the two angles) so
+    the trunk has no artificial jump at the xi = +-pi seam.  ``fourier`` adds
+    sin/cos of all modes |m|,|n| <= n_modes, which is what gives the trunk the
+    spatial frequencies needed to represent an *oscillatory* correction -- the
+    complement of the coarse space is exactly the band above the coarse lattice's
+    resolution, so a trunk without those frequencies cannot span it at all.  See
+    STAGE1_SMOOTHING_PROPERTY.md section 4.  ``xyz`` and ``angles`` are the raw
+    coordinates as literally specified in the brief.
+    """
+    if mode == "xyz":
+        return np.ascontiguousarray(coords, dtype=np.float64)
+    if mode == "angles":
+        return np.ascontiguousarray(angles, dtype=np.float64)
+    xi, eta = angles[:, 0], angles[:, 1]
+    if mode == "trig":
+        return np.stack([np.sin(xi), np.cos(xi), np.sin(eta), np.cos(eta)], axis=1)
+    if mode == "fourier":
+        K = max(1, int(n_modes))
+        feats = []
+        for m in range(-K, K + 1):
+            for n in range(-K, K + 1):
+                if m == 0 and n == 0:
+                    continue
+                feats.append(np.sin(m * xi + n * eta))
+                feats.append(np.cos(m * xi + n * eta))
+        return np.stack(feats, axis=1)
+    raise ValueError("unknown trunk feature mode %r" % mode)
+
+
+def stable_seed(*parts) -> int:
+    """Deterministic 32-bit seed.  ``hash()`` is salted per process, so it cannot
+    be used for anything that has to be reproducible across runs."""
+    return zlib.crc32("|".join(str(p) for p in parts).encode("utf-8")) & 0xFFFFFFFF
+
+
+# ---------------------------------------------------------------------------
+# A2. Level data: load one multigrid level and verify it before trusting it
+# ---------------------------------------------------------------------------
+@dataclass
+class LevelData:
+    A: sp.csr_matrix
+    coords: np.ndarray
+    P: Optional[sp.csr_matrix]
+    angles: np.ndarray
+    lam_min: Optional[float] = None
+    lam_max: Optional[float] = None
+
+    @property
+    def n(self) -> int:
+        return self.A.shape[0]
+
+
+def sparse_spd_report(S: sp.csc_matrix) -> Tuple[bool, Optional[float], Optional[float]]:
+    """Is a sparse symmetric matrix positive definite?  Tested WITHOUT densifying.
+
+    A dense ``np.linalg.cholesky(S.toarray())`` is fine at 1024 DoFs (8 MB) and
+    fatal at 16384 (2.1 GB plus an O(n^3) factorisation), so two sparse tests:
+    definiteness from a SuperLU factorisation in symmetric mode with no pivoting
+    (its U diagonal holds the pivots, positive exactly when S is SPD), and the
+    extreme eigenvalues from sparse Lanczos for reporting.
+    """
+    try:
+        lu = spla.splu(S.tocsc(), diag_pivot_thresh=0.0,
+                       options=dict(SymmetricMode=True))
+        is_spd = bool(np.all(lu.U.diagonal() > 0.0))
+    except RuntimeError:
+        is_spd = False
+    lam_max = lam_min = None
+    try:
+        lam_max = float(spla.eigsh(S, k=1, which="LA", return_eigenvectors=False)[0])
+    except Exception:
+        pass
+    try:
+        lam_min = float(spla.eigsh(S, k=1, which="SA", return_eigenvectors=False)[0])
+    except Exception:
+        pass
+    return is_spd, lam_min, lam_max
+
+
+def load_level(data_dir: str, verbose: bool = False) -> LevelData:
+    """Load a converted level directory and VERIFY it before trusting it.
+
+    Shapes, symmetry, diagonal sign, definiteness and finiteness are checked.  A
+    failed check is a hard error, not a warning: the point is to build on a matrix
+    whose properties are known.
+
+    ``lam_min``/``lam_max`` are the extreme eigenvalues of the *Jacobi-scaled*
+    matrix ``D^{-1/2} A D^{-1/2}``, which has the same spectrum as ``D^{-1} A``.
+    ``lam_max`` is therefore the damped-Jacobi stability limit: the iteration
+    diverges for ``omega >= 2 / lam_max``.
+    """
+    a_path = os.path.join(data_dir, "level_matrix.npz")
+    x_path = os.path.join(data_dir, "dof_coordinates.npy")
+    if not os.path.exists(a_path):
+        raise SystemExit("missing %s -- run tools/convert_level_data.py first" % a_path)
+    if not os.path.exists(x_path):
+        raise SystemExit("missing %s" % x_path)
+
+    A = sp.load_npz(a_path).tocsr()
+    A.sum_duplicates()
+    A.sort_indices()
+    coords = np.load(x_path)
+
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise SystemExit("dof_coordinates.npy must be (n,3), got %r" % (coords.shape,))
+    if A.shape[0] != A.shape[1]:
+        raise SystemExit("A must be square, got %r" % (A.shape,))
+    if coords.shape[0] != A.shape[0]:
+        raise SystemExit("A is %d x %d with %d coordinates -- the DoF ordering "
+                         "cannot be matched" % (A.shape[0], A.shape[1], coords.shape[0]))
+    if not np.all(np.isfinite(A.data)) or not np.all(np.isfinite(coords)):
+        raise SystemExit("A or the coordinates contain non-finite entries")
+
+    asym = abs(A - A.T)
+    asym_max = float(asym.max()) if asym.nnz else 0.0
+    if asym_max > 1e-9 * max(float(abs(A).max()), 1.0):
+        raise SystemExit("max|A - A^T| = %.3e is too large for a symmetric operator" % asym_max)
+
+    diag = A.diagonal()
+    if np.any(diag <= 0.0):
+        raise SystemExit("A has a non-positive diagonal entry (min %.3e)" % diag.min())
+
+    d_is = 1.0 / np.sqrt(diag)
+    S = (sp.diags(d_is) @ A @ sp.diags(d_is)).tocsc()
+    S = ((S + S.T) * 0.5).tocsc()
+    spd_ok, lam_min, lam_max = sparse_spd_report(S)
+    if not spd_ok:
+        raise SystemExit("A is not positive definite (smallest scaled eigenvalue %s)"
+                         % ("%.3e" % lam_min if lam_min is not None else "unavailable"))
+
+    P = None
+    p_path = os.path.join(data_dir, "prolongation.npz")
+    if os.path.exists(p_path):
+        P = sp.load_npz(p_path).tocsr()
+        if P.shape[0] != A.shape[0]:
+            raise SystemExit("prolongation has %d rows, A has %d" % (P.shape[0], A.shape[0]))
+
+    if verbose:
+        log("  %s: n = %d, nnz = %d, P %s"
+            % (data_dir, A.shape[0], A.nnz, "%r" % (P.shape,) if P is not None else "absent"))
+    return LevelData(A=A, coords=coords, P=P, angles=coords_to_angles(coords),
+                     lam_min=lam_min, lam_max=lam_max)
+
+
+# ---------------------------------------------------------------------------
+# A3. Sparse matrix-vector products in torch, with A never densified
+# ---------------------------------------------------------------------------
+def to_torch_sparse(M: sp.spmatrix, dtype=torch.float64) -> torch.Tensor:
+    M = M.tocoo()
+    idx = torch.from_numpy(np.vstack([M.row, M.col]).astype(np.int64))
+    val = torch.from_numpy(np.asarray(M.data, dtype=np.float64)).to(dtype)
+    return torch.sparse_coo_tensor(idx, val, size=M.shape, dtype=dtype).coalesce()
+
+
+class SparseApply(torch.autograd.Function):
+    """``y = M v`` for a constant sparse ``M``, with the transpose passed in.
+
+    Hand-written rather than relying on torch's sparse autograd coverage: the
+    backward pass of ``M v`` is ``M^T g``, and supplying ``M^T`` as a constant
+    makes that exact for any sparsity pattern.  Only the dense operand (an error
+    or a correction) needs a gradient; ``A`` never does.
+    """
+
+    @staticmethod
+    def forward(ctx, v: torch.Tensor, M: torch.Tensor, MT: torch.Tensor) -> torch.Tensor:
+        ctx.MT = MT
+        return torch.sparse.mm(M, v)
+
+    @staticmethod
+    def backward(ctx, g: torch.Tensor):
+        return torch.sparse.mm(ctx.MT, g), None, None
+
+
+def A_apply(V: torch.Tensor, A: torch.Tensor, AT: torch.Tensor) -> torch.Tensor:
+    """``A V`` for ``V`` shaped (B, n) -- sample-major, one error per row.
+
+    torch's sparse mm wants the dense operand as (n, B), so the transpose is done
+    here once instead of at every call site.
+    """
+    return SparseApply.apply(V.t(), A, AT).t()
+
+
+def energy_norm(v: torch.Tensor, A: torch.Tensor, AT: torch.Tensor) -> torch.Tensor:
+    """``v^T A v`` for each row of ``v`` (B,n) -> (B,).  Sparse throughout."""
+    return (v * A_apply(v, A, AT)).sum(dim=1)
+
+
+# ---------------------------------------------------------------------------
+# A4. Error generators
+# ---------------------------------------------------------------------------
+MECHANISMS = ("smooth", "multiscale", "localized", "algebraic")
+
+
+def _modes_to_field(angles, modes, amps, phases):
+    xi, eta = angles[:, 0], angles[:, 1]
+    out = np.zeros_like(xi)
+    for (m, n), a, ph in zip(modes, amps, phases):
+        out += a * np.cos(m * xi + n * eta + ph)
+    return out
+
+
+def gen_smooth(rng, angles, nyq, n_dof):
+    k = int(rng.integers(1, 3))
+    kmax = max(1, min(2, nyq // 4))
+    modes = [(int(rng.integers(-kmax, kmax + 1)), int(rng.integers(-kmax, kmax + 1)))
+             for _ in range(k)]
+    modes = [(m, n) for (m, n) in modes if (m, n) != (0, 0)] or [(1, 0)]
+    amps = rng.normal(size=len(modes))
+    phases = rng.uniform(0.0, 2 * np.pi, size=len(modes))
+    vals = _modes_to_field(angles, modes, amps, phases)
+    return vals, {"modes": modes, "amps": amps.tolist(), "phases": phases.tolist()}, \
+        ("smooth", tuple(sorted(modes)))
+
+
+def gen_multiscale(rng, angles, nyq, n_dof):
+    """Superpose periodic modes over a *band* of wavenumbers with decaying
+    amplitudes.
+
+    Wavenumbers are capped strictly below the mesh Nyquist limit so the sampled
+    field does not alias: sampling a mode above Nyquist onto the DoFs silently
+    produces a different, smoother function, which would make the recorded
+    generator parameters a lie.
+    """
+    kmax = max(2, int(0.75 * nyq))
+    k = int(rng.integers(3, 7))
+    decay = float(rng.uniform(0.4, 1.4))
+    modes, amps = [], []
+    for _ in range(k):
+        m = int(rng.integers(-kmax, kmax + 1))
+        n = int(rng.integers(-kmax, kmax + 1))
+        if (m, n) == (0, 0):
+            continue
+        modes.append((m, n))
+        amps.append((np.hypot(m, n) ** (-decay)) * float(rng.normal()))
+    if not modes:
+        modes, amps = [(1, 1)], [1.0]
+    phases = rng.uniform(0.0, 2 * np.pi, size=len(modes))
+    vals = _modes_to_field(angles, modes, amps, phases)
+    return vals, {"modes": modes, "amps": [float(a) for a in amps],
+                  "phases": phases.tolist(), "decay": decay,
+                  "wavenumber_cap": kmax, "nyquist": int(nyq)}, \
+        ("multiscale", tuple(sorted(modes)), round(decay, 3))
+
+
+def gen_localized(rng, angles, nyq, n_dof):
+    """Periodic Gaussian bumps: localised in space, hence broad in wavenumber.
+    Distances use the periodic parameter square, so a bump straddling the
+    xi = +-pi seam stays one connected bump instead of two half-bumps."""
+    n_bumps = int(rng.integers(1, 3))
+    cell = 2 * np.pi / (2 * nyq)
+    xi, eta = angles[:, 0], angles[:, 1]
+    vals = np.zeros_like(xi)
+    bumps = []
+    for _ in range(n_bumps):
+        xi0 = float(rng.uniform(-np.pi, np.pi))
+        eta0 = float(rng.uniform(-np.pi, np.pi))
+        width = float(rng.uniform(1.0, 3.0)) * cell
+        amp = float(rng.normal())
+        dxi = np.pi - np.abs(np.pi - np.abs(xi - xi0))
+        det = np.pi - np.abs(np.pi - np.abs(eta - eta0))
+        vals += amp * np.exp(-(dxi ** 2 + det ** 2) / (2.0 * width ** 2))
+        bumps.append({"xi": xi0, "eta": eta0, "width": width, "amp": amp})
+    return vals, {"bumps": bumps}, \
+        ("localized", tuple((round(b["xi"], 3), round(b["eta"], 3),
+                             round(b["width"], 6)) for b in bumps))
+
+
+def gen_algebraic(rng, angles, nyq, n_dof):
+    """The classical algebraic test error: independent random coefficients in
+    the FE basis.  The draw index is part of the signature so two splits can
+    never share one draw."""
+    vals = rng.normal(size=n_dof)
+    return vals, {"kind": "iid standard-normal coefficients"}, \
+        ("algebraic", "draw", int(rng.integers(0, 2 ** 31)))
+
+
+def _call_gen(rng, mechanism, angles, nyq, n_dof):
+    if mechanism == "algebraic":
+        return gen_algebraic(rng, angles, nyq, n_dof)
+    if mechanism == "smooth":
+        return gen_smooth(rng, angles, nyq, n_dof)
+    if mechanism == "multiscale":
+        return gen_multiscale(rng, angles, nyq, n_dof)
+    if mechanism == "localized":
+        return gen_localized(rng, angles, nyq, n_dof)
+    raise ValueError(mechanism)
+
+
+def draw_sample(rng, mechanism, angles, nyq, n_dof):
+    """One error sample.  Returns (values at DoFs, generator params, signature).
+
+    ``mixed`` draws a Dirichlet weight per mechanism, normalises each component
+    separately and superposes them, so a mixed sample is a genuine mixture rather
+    than one mechanism scaled.  The RNG call ORDER inside each generator is part
+    of the reproducibility contract: changing it changes every sample.
+    """
+    if mechanism == "mixed":
+        w = rng.dirichlet(np.ones(4) * 0.7)
+        parts = list(MECHANISMS)
+        field = np.zeros(n_dof)
+        sig_parts, params = [], {"weights": {}}
+        for wi, part in zip(w, parts):
+            params["weights"][part] = float(wi)
+            if wi < 1e-6:
+                continue
+            vals, p, s = _call_gen(rng, part, angles, nyq, n_dof)
+            nrm = float(np.linalg.norm(vals))
+            if nrm > 0.0:
+                field += wi * vals / nrm      # each component normalised, then mixed
+            sig_parts.append(s)
+            params[part] = p
+        return field, params, ("mixed", tuple(sig_parts))
+    vals, params, sig = _call_gen(rng, mechanism, angles, nyq, n_dof)
+    return vals, params, sig
+
+
+def normalise_and_residualise(vals, A):
+    """Scale an error to unit A-energy.
+
+    Explicitly guards the degenerate cases: a vanishing or non-finite draw
+    returns None so the caller skips it and counts it, instead of emitting
+    inf/nan silently.
+    """
+    energy = float(vals @ (A @ vals))
+    if not np.isfinite(energy) or energy <= 0.0:
+        return None
+    return vals / np.sqrt(energy)
+
+
+# ---------------------------------------------------------------------------
+# A5. Classical smoothers -- one full sweep each, as a correction to the error
+# ---------------------------------------------------------------------------
+class ClassicalSmoothers:
+    """One application of each classical smoother, expressed as a correction.
+
+    Jacobi is a diagonal scaling and is batched; Gauss-Seidel and SSOR are
+    sequential triangular solves and are applied one sample at a time.  With
+    omega = 1, SSOR *is* symmetric Gauss-Seidel, so those two rows of the results
+    table coincide exactly -- that is a property of the methods, not a bug.
+    """
+
+    def __init__(self, A: sp.csr_matrix):
+        self.A = A.tocsr()
+        self.n = A.shape[0]
+        self.diag = A.diagonal()
+        self.D = sp.diags(self.diag)
+        self.L = sp.tril(self.A, k=-1, format="csc")
+        self.U = sp.triu(self.A, k=1, format="csc")
+
+    def jacobi(self, r, omega):
+        """``omega * D^{-1} r``; batched, so ``r`` is (N, n) sample-major."""
+        return omega * r / self.diag
+
+    def gauss_seidel(self, r, omega=1.0):
+        return spla.spsolve_triangular((self.D + omega * self.L).tocsc(), r, lower=True)
+
+    def symmetric_gs(self, r):
+        y = spla.spsolve_triangular((self.D + self.L).tocsc(), r, lower=True)
+        return spla.spsolve_triangular((self.D + self.U).tocsc(), self.diag * y, lower=False)
+
+    def ssor(self, r, omega=1.0):
+        """With omega = 1 this is exactly symmetric Gauss-Seidel."""
+        y = spla.spsolve_triangular((self.D + omega * self.L).tocsc(), r, lower=True)
+        z = spla.spsolve_triangular((self.D + omega * self.U).tocsc(), self.diag * y, lower=False)
+        return omega * (2.0 - omega) * z
+
+
+# ---------------------------------------------------------------------------
+# A6. The DeepONet
+# ---------------------------------------------------------------------------
+class Branch(nn.Module):
+    """Encodes the residual.  ``bias=False`` throughout, so a zero residual maps
+    to a zero branch output: an exact discrete solution stays a fixed point of the
+    smoothing step by construction, not merely by training."""
+
+    def __init__(self, in_dim, width, p, depth):
+        super().__init__()
+        layers, d = [], in_dim
+        for _ in range(depth):
+            layers += [nn.Linear(d, width, bias=False), nn.Tanh()]
+            d = width
+        layers.append(nn.Linear(d, p, bias=False))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class Trunk(nn.Module):
+    """Encodes the evaluation point -- the DoF support point."""
+
+    def __init__(self, in_dim, width, p, depth):
+        super().__init__()
+        layers, d = [], in_dim
+        for _ in range(depth):
+            layers += [nn.Linear(d, width), nn.Tanh()]
+            d = width
+        layers.append(nn.Linear(d, p))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class FrozenTrunk(nn.Module):
+    """A trunk that is a fixed matrix ``T`` (n, p) and is never trained.
+
+    Freezing is what makes the trunk *provably* non-binding rather than
+    empirically so.  When ``T`` has orthonormal columns spanning ``R^n`` -- the
+    orthonormalised Fourier basis up to the fine Nyquist -- then
+    ``span(T) = R^n``, so the floor on ``mu_F`` is exactly zero and ``mu_F`` can
+    only be a statement about the branch.  Orthonormality additionally keeps the
+    parameterisation well conditioned: ``T^T T = I``, so the branch's coefficients
+    are exactly the correction's own Fourier coefficients.
+    """
+
+    def __init__(self, T: np.ndarray):
+        super().__init__()
+        self.register_buffer("T", torch.from_numpy(np.ascontiguousarray(T, dtype=np.float64)))
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.T
+
+
+class DeepONetSmoother(nn.Module):
+    """``delta_e = sum_k branch_k(r) * T_k(x)``, evaluated at every DoF at once.
+
+    ``n_dof`` is baked into the first branch layer, which is precisely why the
+    model is bound to one DoF count and one DoF ordering.
+
+    ``base_smoother="jacobi"`` adds a diagonal skip with a learnable coefficient,
+
+        delta_e = omega * D^{-1} r + branch(r) . T(x) ,
+
+    so the network only has to learn what a damped Jacobi step leaves behind.  The
+    branch biases stay False, so ``delta_e`` vanishes at ``r = 0`` either way.
+    """
+
+    def __init__(self, n_dof, trunk_dim, p, width, depth,
+                 base_smoother="none", diag=None, omega_init=2.0 / 3.0):
+        super().__init__()
+        self.p = p
+        self.base_smoother = base_smoother
+        self.branch = Branch(n_dof, width, p, depth)
+        self.trunk = Trunk(trunk_dim, width, p, depth)
+        if base_smoother == "jacobi":
+            if diag is None:
+                raise ValueError("base_smoother='jacobi' needs the matrix diagonal")
+            self.register_buffer(
+                "dinv", torch.from_numpy(1.0 / np.asarray(diag, dtype=np.float64)))
+            self.omega = nn.Parameter(torch.tensor(float(omega_init), dtype=torch.float64))
+
+    def forward(self, residual, features, coeff=None):
+        out = self.branch(residual) @ self.trunk(features).t()
+        if self.base_smoother == "jacobi":
+            out = self.omega.to(out.dtype) * (residual * self.dinv.to(out.dtype)) + out
+        return out
+
+
+class Stage1Net(nn.Module):
+    """``delta_e = ||r||_2 * B_theta(r / ||r||_2, X)``.
+
+    A deliberate modelling choice, stated because it constrains the answer.  Every
+    classical smoother in the comparison table is a *linear* operator, and for a
+    linear smoother the map ``r -> delta_e`` is exactly homogeneous of degree one
+    -- the exact solve ``delta_e = A^{-1} r`` being the extreme case.  Imposing
+    homogeneity puts the network in the same class as the objects it is compared
+    against and makes ``rho`` scale-free.  A non-homogeneous DeepONet has strictly
+    more freedom, all of it on the coarse side, which is exactly where the
+    question is; so the constraint is the conservative choice, not the flattering
+    one.
+
+    ``base_smoother="jacobi"`` preserves homogeneity: the skip acts on ``r``, the
+    learned part on ``r/||r||`` and is then rescaled, so both terms are degree one.
+    """
+
+    def __init__(self, inner: DeepONetSmoother, features: torch.Tensor):
+        super().__init__()
+        self.inner = inner
+        self.register_buffer("features", features)
+
+    def forward(self, R: torch.Tensor) -> torch.Tensor:
+        """``R`` (B, n) raw residuals ``A e`` -> (B, n) corrections."""
+        nrm = torch.linalg.norm(R, dim=1, keepdim=True).clamp_min(1e-300)
+        return nrm * self.inner(R / nrm, self.features)
+
+
+# ===========================================================================
+# PART B -- Stage I
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# B1. Palette -- the set already used by the repository's C++ benchmark plots
+# (bench/plot.py on the branch this work grew from), kept identical so a figure
+# from here can sit beside a figure from there.  Fixed slot per method, never
+# keyed by rank and never cycled.
 # ---------------------------------------------------------------------------
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -169,10 +684,6 @@ TABLE_ORDER = ["jacobi", "damped_jacobi", "gauss_seidel", "symmetric_gs", "ssor"
 CLASSICAL = ["jacobi", "damped_jacobi", "gauss_seidel", "symmetric_gs", "ssor"]
 
 
-def log(msg: str = "") -> None:
-    print(msg, flush=True)
-
-
 def energy_rows(V: np.ndarray, A: sp.spmatrix) -> np.ndarray:
     """``v^T A v`` for each row of ``V`` (N, n) -> (N,).
 
@@ -185,15 +696,15 @@ def energy_rows(V: np.ndarray, A: sp.spmatrix) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# 1. The Galerkin coarse space and its A-orthogonal projection
+# B2. The Galerkin coarse space and its A-orthogonal projection
 # ---------------------------------------------------------------------------
 class GalerkinCoarseSpace:
     """``A_c = P^T A P`` plus the exact A-orthogonal split ``e = e_C + e_F``.
 
     The inverse of ``P^T A P`` is never formed.  The coarse system is solved --
-    what the brief prescribes, and the only sane thing to do: the explicit
-    inverse is a dense ``n_c x n_c`` object, while the sparse factorisation is
-    built once and reused for every sample.
+    what the brief prescribes, and the only sane thing to do: the explicit inverse
+    is a dense ``n_c x n_c`` object, while the sparse factorisation is built once
+    and reused for every sample.
     """
 
     def __init__(self, A: sp.csr_matrix, P: sp.csr_matrix, verbose: bool = True):
@@ -212,7 +723,7 @@ class GalerkinCoarseSpace:
         self.A_c = Ac
         self.lu = spla.splu(Ac)
 
-        # lambda_min(A_c) > 0 is what makes the sum in the module docstring
+        # lambda_min(A_c) > 0 is what makes the direct sum in the module docstring
         # *direct*: P^T A P z = 0 must force z = 0.  Verified, not assumed.
         self.A_c_eigmin = float(spla.eigsh(Ac, k=1, which="SA",
                                            return_eigenvectors=False)[0])
@@ -227,25 +738,24 @@ class GalerkinCoarseSpace:
 
     def split(self, E: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """``E`` is (N, n) sample-major.  Returns ``(E_C, E_F)``, ``E_C = Pi_C E``."""
-        AE = np.asarray(self.A @ E.T)             # (n, N)
+        AE = np.asarray(self.A @ E.T)                  # (n, N)
         Z = self.lu.solve(np.asarray(self.P.T @ AE))   # (n_c, N)
-        EC = np.asarray(self.P @ Z).T             # (N, n)
+        EC = np.asarray(self.P @ Z).T                  # (N, n)
         return EC, E - EC
 
     def verify_split(self, E: np.ndarray, EC: np.ndarray,
                      EF: np.ndarray) -> Dict[str, float]:
         """The identities the brief states, measured on real samples.
 
-        Returned as relative residuals so they are comparable across sample
-        scale; anything above a few 1e-12 means the split is wrong.
+        Returned as relative residuals so they are comparable across sample scale;
+        anything above a few 1e-12 means the split is wrong.
         """
-        # Sample-major throughout: everything the caller passes is (N, n).
-        AEF = np.asarray(self.A @ EF.T).T                     # (N, n)
+        AEF = np.asarray(self.A @ EF.T).T              # (N, n)
         ec_aef = np.einsum("si,si->s", EC, AEF)
         orth = np.abs(ec_aef) / np.maximum(
             np.linalg.norm(EC, axis=1) * np.linalg.norm(AEF, axis=1), 1e-300)
 
-        PtAEF = np.asarray(self.P.T @ AEF.T)                  # (n_c, N)
+        PtAEF = np.asarray(self.P.T @ AEF.T)           # (n_c, N)
         gorth = np.linalg.norm(PtAEF, axis=0) / np.maximum(
             np.linalg.norm(AEF, axis=1), 1e-300)
 
@@ -262,15 +772,15 @@ class GalerkinCoarseSpace:
 
 
 # ---------------------------------------------------------------------------
-# 2. Errors, split into their coarse and complement components
+# B3. Errors, split into their coarse and complement components
 # ---------------------------------------------------------------------------
 @dataclass
 class Split:
     """One role's errors, both components, and the residuals of each.
 
     ``RF``/``RC`` are ``A e_F`` / ``A e_C`` in sample-major form (N, n), formed
-    once: ``A`` is constant and ``A e_F`` is the entire input distribution of
-    this stage.
+    once: ``A`` is constant and ``A e_F`` is the entire input distribution of this
+    stage.
     """
     role: str
     E: np.ndarray
@@ -307,7 +817,7 @@ def build_split(role: str, plan: Sequence[Tuple[str, int]], A: sp.csr_matrix,
         while got < count and attempts < count * 20:
             attempts += 1
             vals, _params, _sig = draw_sample(rng, mechanism, angles, nyq, n_dof)
-            e, _r = normalise_and_residualise(vals, A)
+            e = normalise_and_residualise(vals, A)
             if e is None:
                 discarded += 1
                 continue
@@ -333,68 +843,8 @@ def build_split(role: str, plan: Sequence[Tuple[str, int]], A: sp.csr_matrix,
 
 
 # ---------------------------------------------------------------------------
-# 3. The learned smoother
+# B4. Training -- on the complement component only
 # ---------------------------------------------------------------------------
-class FrozenTrunk(nn.Module):
-    """A trunk that is a fixed matrix ``T`` (n, p) and is never trained.
-
-    Freezing is what makes the trunk *provably* non-binding rather than
-    empirically so.  When ``T`` has orthonormal columns spanning ``R^n`` -- the
-    orthonormalised Fourier basis up to the fine Nyquist -- then
-    ``span(T) = R^n``, so the floor in §4 of the report is exactly zero and
-    ``mu_F`` can only be a statement about the branch.  A learned trunk reaches
-    full rank here too (verified: rank 1024 of p = 1024), so nothing in
-    expressiveness is given up, but a learned trunk must be re-evaluated and
-    re-differentiated inside every training step, which is ~70% of the step cost
-    for a matrix that is already full rank.  Freezing also stops the trunk
-    drifting to a lower-rank configuration mid-run, which would silently
-    re-introduce the confound this whole diagnostic exists to remove.
-
-    Orthonormality additionally keeps the parameterisation well conditioned:
-    ``T^T T = I``, so the branch's coefficients are exactly the correction's
-    Fourier coefficients and carry no conditioning penalty of their own.
-    """
-
-    def __init__(self, T: np.ndarray):
-        super().__init__()
-        self.register_buffer("T", torch.from_numpy(np.ascontiguousarray(T, dtype=np.float64)))
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.T
-
-    @property
-    def p(self) -> int:
-        return int(self.T.shape[1])
-
-
-class Stage1Net(nn.Module):
-    """``delta_e = ||r||_2 * B_theta(r / ||r||_2, X)``.
-
-    The wrapping is a deliberate modelling choice, stated because it constrains
-    the answer.  Every classical smoother in the comparison table is a *linear*
-    operator, and for a linear smoother the map ``r -> delta_e`` is exactly
-    homogeneous of degree one -- the exact solve ``delta_e = A^{-1} r`` being the
-    extreme case.  Imposing homogeneity puts the network in the same class as the
-    objects it is compared against and makes ``rho`` scale-free.  A
-    non-homogeneous DeepONet has strictly more freedom, all of it on the coarse
-    side, which is precisely where the question is; so the constraint is the
-    conservative choice rather than the flattering one.
-
-    ``base_smoother="jacobi"`` preserves homogeneity: the skip acts on ``r``, the
-    learned part on ``r/||r||`` and is then rescaled, so both terms are degree one.
-    """
-
-    def __init__(self, inner: DeepONetSmoother, features: torch.Tensor):
-        super().__init__()
-        self.inner = inner
-        self.register_buffer("features", features)
-
-    def forward(self, R: torch.Tensor) -> torch.Tensor:
-        """``R`` (B, n) raw residuals ``A e`` -> (B, n) corrections."""
-        nrm = torch.linalg.norm(R, dim=1, keepdim=True).clamp_min(1e-300)
-        return nrm * self.inner(R / nrm, self.features)
-
-
 def smooth_loss(model: Stage1Net, R: torch.Tensor, EF: torch.Tensor,
                 den: torch.Tensor, A_t: torch.Tensor, AT_t: torch.Tensor,
                 eps: float = 1e-30) -> torch.Tensor:
@@ -409,11 +859,8 @@ def train(model: Stage1Net, tr: Split, va: Split, A_t, AT_t, epochs: int,
     """Train on ``e_F`` only.
 
     The validation set is also only ever seen through its complement component:
-    ``e_C`` is not touched until evaluation.
-
-    ``log_fn`` defaults to stdout only.  Main passes the tee that also writes
-    ``run.log``, so the per-epoch trace ends up in the run's own log file rather
-    than only in the console capture.
+    ``e_C`` is not touched until evaluation.  ``log_fn`` defaults to stdout; main
+    passes the tee that also writes ``run.log``.
     """
     say = log_fn if log_fn is not None else log
     torch.manual_seed(seed)
@@ -474,12 +921,13 @@ def train(model: Stage1Net, tr: Split, va: Split, A_t, AT_t, epochs: int,
     if best["state"] is not None:
         model.load_state_dict(best["state"])
     return {"history": history,
-            "best": {"val_mse": best["val_mse"], "val_mu_F": float(np.sqrt(max(best["val_mse"], 0.0))),
+            "best": {"val_mse": best["val_mse"],
+                     "val_mu_F": float(np.sqrt(max(best["val_mse"], 0.0))),
                      "epoch": best["epoch"], "epochs_run": len(history["epoch"])}}
 
 
 # ---------------------------------------------------------------------------
-# 4. Evaluation
+# B5. Evaluation
 # ---------------------------------------------------------------------------
 def reduction_stats(rho: np.ndarray) -> Dict[str, float]:
     rho = np.asarray(rho, dtype=np.float64)
@@ -504,8 +952,8 @@ def apply_classical(kind: str, E: np.ndarray, R: np.ndarray,
                     ssor_omega: float) -> np.ndarray:
     """``Enew = E - correction`` for one full sweep.  Both ``E`` and ``R`` are
     (N, n) sample-major, which is the layout ``ClassicalSmoothers`` expects --
-    asserting it here because ``jacobi`` divides by a length-n vector and would
-    silently broadcast along the wrong axis under the transpose."""
+    asserted here because ``jacobi`` divides by a length-n vector and under the
+    transpose it would silently broadcast along the wrong axis."""
     if R.shape != E.shape:
         raise ValueError("R %r and E %r must be sample-major and equal" % (R.shape, E.shape))
     if kind == "jacobi":
@@ -525,11 +973,10 @@ def pick_jacobi_omega(cs: ClassicalSmoothers, split: Split, A: sp.csr_matrix,
                       lam_max: float, grid_n: int = 13) -> Dict[str, object]:
     """Choose the damping on *validation* ``mu_F``, then reuse it on test.
 
-    The sweep is expressed relative to ``2 / lambda_max(D^{-1} A)``, the
-    stability limit: beyond it damped Jacobi diverges and there is nothing to
-    tune.  Selecting on the complement component gives the classical method its
-    best shot at the same target the network is trained on, so neither is
-    handicapped.
+    The sweep is expressed relative to ``2 / lambda_max(D^{-1} A)``, the stability
+    limit: beyond it damped Jacobi diverges and there is nothing to tune.
+    Selecting on the complement component gives the classical method its best shot
+    at the same target the network is trained on, so neither is handicapped.
     """
     limit = 2.0 / float(lam_max)
     table = {}
@@ -541,7 +988,10 @@ def pick_jacobi_omega(cs: ClassicalSmoothers, split: Split, A: sp.csr_matrix,
             "stability_limit": limit, "sweep": table}
 
 
-def fit_ridge(tr: Split, va: Split, te: Split, A: sp.csc_matrix,
+# ---------------------------------------------------------------------------
+# B6. Diagnostics: a linear reference for the same data
+# ---------------------------------------------------------------------------
+def fit_ridge(tr: Split, va: Split, A: sp.csc_matrix,
               lam_grid: Sequence[float]) -> Dict[str, object]:
     """Best *linear* map ``r -> delta_e`` fitted to the same training pairs.
 
@@ -551,23 +1001,22 @@ def fit_ridge(tr: Split, va: Split, te: Split, A: sp.csc_matrix,
 
         min_V  sum_i || V r_i - G e_i ||^2 + lam ||V||_F^2 ,   W = G^{-1} V ,
 
-    whose normal equations are ``(R^T R + lam I) V^T = R^T (G E^T)^T``.  The
-    regulariser is chosen on the same validation complement metric as everything
-    else, so the diagnostic gets no advantage over the network.
+    whose normal equations are ``(R^T R + lam I) V^T = R^T (G E^T)^T``.
+
+    The network minimises the *relative* energy,
+    ``sum_i ||.||_A^2 / ||e_i||_A^2``, which is a weighted least squares with
+    ``w_i = 1/||e_i||_A^2``.  The weights are applied here too, by scaling the
+    data by ``sqrt(w_i)`` and running the regression as if unweighted; without
+    them the reference would optimise a different objective from the one the
+    table scores, and would understate what a linear map can do.
     """
     n = tr.RF.shape[1]
     G = np.linalg.cholesky(np.asarray(A.todense())).T       # G^T G = A
-
-    # The network's loss is the *relative* energy, sum_i ||.||_A^2 / ||e_i||_A^2,
-    # which is a weighted least squares with w_i = 1/||e_i||_A^2.  Fitting the
-    # unweighted problem instead would hand the network an advantage the
-    # comparison is supposed to measure, so the weights are applied here too: the
-    # data is scaled by sqrt(w_i) and the regression run as if unweighted.
     w = 1.0 / np.maximum(np.sqrt(energy_rows(tr.EF, A)), 1e-12)
     Rs = tr.RF * w[:, None]
     Es = tr.EF * w[:, None]
 
-    Zt = (G @ Es.T).T                                       # (N, n) = G e_i rows
+    Zt = (G @ Es.T).T                                       # (N, n)
     RtR = Rs.T @ Rs
     RtZ = Rs.T @ Zt
 
@@ -575,9 +1024,9 @@ def fit_ridge(tr: Split, va: Split, te: Split, A: sp.csc_matrix,
         """``delta_e`` for each row of ``R``.
 
         ``W`` acts on a column vector, so row-wise this is ``R @ W.T``.  Writing
-        ``R @ W`` instead silently applies the transpose; the two are both
-        plausible-looking ridge fits, so the mistake is invisible in the loss
-        curve and only shows up as an unexplained number in the table.
+        ``R @ W`` instead silently applies the transpose; both are plausible ridge
+        fits, so the mistake is invisible in the loss curve and shows up only as
+        an unexplained number in the table.
         """
         return R @ W.T
 
@@ -585,72 +1034,43 @@ def fit_ridge(tr: Split, va: Split, te: Split, A: sp.csc_matrix,
     grid = {}
     for lam in lam_grid:
         Vt = np.linalg.solve(RtR + float(lam) * np.eye(n), RtZ)
-        W = np.linalg.solve(G, Vt.T)                         # (n, n)
+        W = np.linalg.solve(G, Vt.T)
         mu = reduction_stats(rho_of(va.EF, va.EF - predict(va.RF, W), A))["mean"]
         grid[float(lam)] = float(mu)
         if best is None or mu < best[1]:
             best = (float(lam), float(mu), W)
     lam, mu_va, W = best
 
-    # A ridge fit must reproduce its own training data well.  If the transpose
-    # were wrong this is where it would show, so it is checked rather than
-    # assumed.
+    # A ridge fit must reproduce its own training data.  If the transpose were
+    # wrong this is where it would show, so it is checked rather than assumed.
     mu_tr = reduction_stats(rho_of(tr.EF, tr.EF - predict(tr.RF, W), A))["mean"]
     return {"lambda": lam, "val_mu_F": mu_va, "train_mu_F": float(mu_tr),
             "grid": grid, "W": W, "predict": predict}
 
 
-# ---------------------------------------------------------------------------
-# 5. Figures
-# ---------------------------------------------------------------------------
-def replot(out_dir: str) -> int:
-    """Redraw the figures that need nothing but the run's own recorded numbers.
+def trunk_floor(T: np.ndarray, EF: np.ndarray, A: sp.spmatrix,
+                reg_rel: float = 1e-12) -> Tuple[float, int]:
+    """Floor on ``mu_F`` for ANY branch against the trunk ``T``.
 
-    ``metrics.json`` holds every mean (and so the whole selectivity map and the
-    per-mechanism bars) and ``history.csv`` holds the loss trace, so a change to
-    how a figure is *drawn* does not require re-training to take effect.
-    ``reduction_histograms.png`` is the exception: it needs the per-sample
-    ``rho`` arrays, which are derived during evaluation and deliberately not
-    written to disk.
+    The best A-norm approximation of each ``e_F`` inside ``span(T)`` solves
+    ``(T^T A T) c = T^T A e_F``, so ``mu_F >= E[ sqrt(1 - reach) ]``.  Returns
+    that floor and ``rank(T)``.  With ``span(T) = R^n`` the floor is zero and the
+    trunk is provably not what is being measured.
     """
-    m_path = os.path.join(out_dir, "metrics.json")
-    if not os.path.exists(m_path):
-        raise SystemExit("no metrics.json in %s -- nothing to replot" % out_dir)
-    with open(m_path, encoding="utf-8") as fh:
-        metrics = json.load(fh)
-    plots = os.path.join(out_dir, "plots")
-    os.makedirs(plots, exist_ok=True)
-
-    rows = dict(metrics["headline_table"])
-    if metrics.get("ridge_table"):
-        rows["ridge"] = metrics["ridge_table"]
-    rows["exact_solve"] = metrics["reference_exact_solve"]
-    stats = {k: {"F": {"mean": r["mu_F"]}, "C": {"mean": r["mu_C"]}}
-             for k, r in rows.items()}
-    plot_selectivity(stats, os.path.join(plots, "selectivity_map.png"))
-    plot_per_mechanism(metrics["per_mechanism_mu_F"],
-                       os.path.join(plots, "per_mechanism.png"))
-
-    h_path = os.path.join(out_dir, "history.csv")
-    if os.path.exists(h_path):
-        hist = {"epoch": [], "train_loss": [], "val_mse": [], "lr": []}
-        with open(h_path, encoding="utf-8") as fh:
-            next(fh)
-            for line in fh:
-                if not line.strip():
-                    continue
-                e, tr, va, lr = line.split(",")
-                hist["epoch"].append(int(e))
-                hist["train_loss"].append(float(tr))
-                hist["val_mse"].append(float(va))
-                hist["lr"].append(float(lr))
-        plot_loss_curves(hist, os.path.join(plots, "loss_curves.png"))
-
-    log("replotted %s -> selectivity_map.png, per_mechanism.png%s"
-        % (out_dir, ", loss_curves.png" if os.path.exists(h_path) else ""))
-    return 0
+    TtAT = T.T @ np.asarray(A @ T)
+    p = T.shape[1]
+    coef = np.linalg.solve(
+        TtAT + reg_rel * (np.trace(TtAT) / max(p, 1)) * np.eye(p),
+        T.T @ np.asarray(A @ EF.T))
+    approx = (T @ coef).T
+    reach = energy_rows(approx, A) / np.maximum(energy_rows(EF, A), 1e-300)
+    return float(np.mean(np.sqrt(np.maximum(1.0 - reach, 0.0)))), \
+        int(np.linalg.matrix_rank(T, tol=1e-10))
 
 
+# ---------------------------------------------------------------------------
+# B7. Figures
+# ---------------------------------------------------------------------------
 def _style_axis(ax) -> None:
     ax.set_facecolor(SURFACE)
     ax.grid(True, which="major", color=GRID, linewidth=0.7, zorder=0)
@@ -719,15 +1139,12 @@ def plot_selectivity(stats: Dict[str, Dict[str, Dict[str, float]]], outpath: str
     # at omega = 1 *is* symmetric Gauss-Seidel, so the two points are the same
     # point and two labels would print on top of each other.
     groups: Dict[Tuple[float, float], List[str]] = {}
-    for k in TABLE_ORDER:
-        s = stats[k]
-        groups.setdefault((round(s["F"]["mean"], 4), round(s["C"]["mean"], 4)),
-                          []).append(LABEL[k])
     colors: Dict[Tuple[float, float], str] = {}
     for k in TABLE_ORDER:
         s = stats[k]
-        colors.setdefault((round(s["F"]["mean"], 4), round(s["C"]["mean"], 4)),
-                          SERIES[k])
+        key = (round(s["F"]["mean"], 4), round(s["C"]["mean"], 4))
+        groups.setdefault(key, []).append(LABEL[k])
+        colors.setdefault(key, SERIES[k])
 
     for (xf, yc), names in groups.items():
         ax.scatter([xf], [yc], s=72, color=colors[(xf, yc)],
@@ -738,8 +1155,7 @@ def plot_selectivity(stats: Dict[str, Dict[str, Dict[str, float]]], outpath: str
     ax.set_ylim(0, lim)
     ax.set_xlabel(r"$\mu_F$  (complement component)", color=INK_2, fontsize=9)
     ax.set_ylabel(r"$\mu_C$  (coarse component)", color=INK_2, fontsize=9)
-    ax.set_title("Smoothing selectivity on level 3",
-                 color=INK, fontsize=10.5, loc="left")
+    ax.set_title("Smoothing selectivity on level 3", color=INK, fontsize=10.5, loc="left")
     fig.savefig(outpath, dpi=300, facecolor=SURFACE, bbox_inches="tight")
     plt.close(fig)
 
@@ -764,8 +1180,55 @@ def plot_per_mechanism(per_mech: Dict[str, Dict[str, float]], outpath: str) -> N
     plt.close(fig)
 
 
+def replot(out_dir: str) -> int:
+    """Redraw the figures that need nothing but the run's own recorded numbers.
+
+    ``metrics.json`` holds every mean (so the whole selectivity map and the
+    per-mechanism bars) and ``history.csv`` holds the loss trace, so a change to
+    how a figure is *drawn* does not require re-training.  ``reduction_histograms.png``
+    is the exception: it needs the per-sample ``rho`` arrays, which are derived
+    during evaluation and deliberately not written to disk.
+    """
+    m_path = os.path.join(out_dir, "metrics.json")
+    if not os.path.exists(m_path):
+        raise SystemExit("no metrics.json in %s -- nothing to replot" % out_dir)
+    with open(m_path, encoding="utf-8") as fh:
+        metrics = json.load(fh)
+    plots = os.path.join(out_dir, "plots")
+    os.makedirs(plots, exist_ok=True)
+
+    rows = dict(metrics["headline_table"])
+    if metrics.get("ridge_table"):
+        rows["ridge"] = metrics["ridge_table"]
+    rows["exact_solve"] = metrics["reference_exact_solve"]
+    stats = {k: {"F": {"mean": r["mu_F"]}, "C": {"mean": r["mu_C"]}}
+             for k, r in rows.items()}
+    plot_selectivity(stats, os.path.join(plots, "selectivity_map.png"))
+    plot_per_mechanism(metrics["per_mechanism_mu_F"],
+                       os.path.join(plots, "per_mechanism.png"))
+
+    h_path = os.path.join(out_dir, "history.csv")
+    if os.path.exists(h_path):
+        hist = {"epoch": [], "train_loss": [], "val_mse": [], "lr": []}
+        with open(h_path, encoding="utf-8") as fh:
+            next(fh)
+            for line in fh:
+                if not line.strip():
+                    continue
+                e, tr_, va, lr = line.split(",")
+                hist["epoch"].append(int(e))
+                hist["train_loss"].append(float(tr_))
+                hist["val_mse"].append(float(va))
+                hist["lr"].append(float(lr))
+        plot_loss_curves(hist, os.path.join(plots, "loss_curves.png"))
+
+    log("replotted %s -> selectivity_map.png, per_mechanism.png%s"
+        % (out_dir, ", loss_curves.png" if os.path.exists(h_path) else ""))
+    return 0
+
+
 # ---------------------------------------------------------------------------
-# 6. Self-test -- no training, no data generation
+# B8. Self-test -- no training, no data generation
 # ---------------------------------------------------------------------------
 def selftest(data_dir: str) -> int:
     """Check the projector identities and every smoother against its dense form.
@@ -837,7 +1300,7 @@ def selftest(data_dir: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 7. Main
+# B9. Main
 # ---------------------------------------------------------------------------
 ROLE_MULT = {"train": 1.0, "val": 0.25, "test": 0.5}
 BASE_PLAN = [("mixed", 1024), ("smooth", 256), ("multiscale", 256),
@@ -859,30 +1322,32 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260925)
     ap.add_argument("--epochs", type=int, default=1200)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=2e-3)
+    ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--weight-decay", type=float, default=0.0)
-    ap.add_argument("--patience", type=int, default=250)
+    ap.add_argument("--patience", type=int, default=300)
     ap.add_argument("--p", type=int, default=1024,
                     help="branch/trunk width; bounds the rank of the correction. "
-                         "Defaults to n, which makes the trunk-span floor vacuous")
-    ap.add_argument("--width", type=int, default=256)
+                         "n makes the trunk-span floor vacuous")
+    ap.add_argument("--width", type=int, default=768,
+                    help="branch hidden width. This is a RESULT, not a tuning knob: "
+                         "the branch's Jacobian factors through it, so a width below "
+                         "the complement dimension caps mu_F no matter what the "
+                         "optimiser does -- see tools/branch_rank_probe.py")
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--trunk-features", default="fourier",
                     choices=["xyz", "angles", "trig", "fourier"])
     ap.add_argument("--trunk-modes", type=int, default=16)
     ap.add_argument("--trunk-width", type=int, default=-1,
-                    help="trunk hidden width; -1 reuses --width.  The trunk's "
-                         "output rank is bounded by its width, so a narrow trunk "
-                         "can bind mu_F on its own")
+                    help="trunk hidden width; -1 reuses --width.  rank(T) is bounded "
+                         "by the trunk width, so a narrow trunk can bind mu_F on its own")
     ap.add_argument("--trunk-depth", type=int, default=0,
-                    help="trunk hidden depth; 0 makes the trunk a single linear "
-                         "map of the features, which is what lets span(T) cover "
-                         "the complement and keeps the trunk out of the answer")
+                    help="trunk hidden depth; 0 makes the trunk a single linear map of "
+                         "the features")
     ap.add_argument("--trunk-freeze", default="fourier-orth",
                     choices=["none", "fourier-orth"],
-                    help="'fourier-orth' freezes the trunk to an orthonormal basis "
-                         "of the features, so span(T) = R^n and the trunk-span "
-                         "floor is exactly zero. 'none' trains the trunk")
+                    help="'fourier-orth' freezes the trunk to an orthonormal basis of "
+                         "the features, so span(T) = R^n and the trunk-span floor is "
+                         "exactly zero. 'none' trains the trunk")
     ap.add_argument("--base-smoother", default="none", choices=["none", "jacobi"],
                     help="'jacobi' adds a learnable damped-Jacobi skip")
     ap.add_argument("--ftol", type=float, default=1e-8,
@@ -912,9 +1377,9 @@ def main() -> int:
         args.out_dir = args.out_dir + "_" + args.tag
     if args.threads:
         torch.set_num_threads(args.threads)
-    # Same two settings the rest of the branch runs with: float64 throughout
-    # (the energies being compared differ in the 4th decimal), and the sparse
-    # invariant check off, since it only warns once per construction.
+
+    # float64 throughout (the energies being compared differ in the 4th decimal),
+    # and the sparse invariant check off, since it only warns once per construction.
     dtype = torch.float64
     torch.sparse.check_sparse_tensor_invariants.disable()
 
@@ -994,9 +1459,9 @@ def main() -> int:
     frozen_T = None
     if args.trunk_freeze == "fourier-orth":
         # Orthonormalise the feature map on the DoF points.  Q is (n, k) with
-        # orthonormal columns, k = min(n, dim(features)); with Fourier modes up
-        # to the fine Nyquist the features already span R^n, so Q spans R^n and
-        # the correction set is unrestricted.
+        # orthonormal columns; with Fourier modes up to the fine Nyquist the
+        # features already span R^n, so Q spans R^n and the correction set is
+        # unrestricted.
         Q, _ = np.linalg.qr(features_np)
         frozen_T = np.ascontiguousarray(Q[:, :min(n, features_np.shape[1])])
         if frozen_T.shape[1] < args.p:
@@ -1011,26 +1476,27 @@ def main() -> int:
     trunk_width = args.trunk_width if args.trunk_width > 0 else args.width
     if frozen_T is not None:
         inner.trunk = FrozenTrunk(frozen_T)
-        trunk_width, trunk_depth_desc = frozen_T.shape[1], "frozen/orthonormal"
+        trunk_desc = "%d, frozen/orthonormal" % frozen_T.shape[1]
     else:
-        # The trunk is given its own geometry.  DeepONetSmoother ties the trunk's
-        # width and depth to the branch's, and rank(T) <= trunk width, so with a
-        # shared narrow width the trunk alone can hold mu_F above ~0.75 whatever
-        # the branch learns -- the trunk, not the smoother, would be under test.
-        trunk_depth_desc = str(args.trunk_depth)
+        # The trunk is given its own geometry.  A shared narrow width would let
+        # rank(T) <= trunk width hold mu_F up on its own -- the trunk, not the
+        # smoother, would be under test.
+        trunk_desc = "%d, depth %d" % (trunk_width, args.trunk_depth)
         if (trunk_width, args.trunk_depth) != (args.width, args.depth):
-            inner.trunk = Trunk(features_np.shape[1], trunk_width, args.p,
-                                args.trunk_depth)
+            inner.trunk = Trunk(features_np.shape[1], trunk_width, args.p, args.trunk_depth)
     inner = inner.to(dtype)
     model = Stage1Net(inner, features)
     n_par = sum(p.numel() for p in model.parameters())
-    log2("  trunk %s -> dim %d ; trunk width %s depth %s ; frozen = %s"
-         % (args.trunk_features, features_np.shape[1], trunk_width,
-            trunk_depth_desc, frozen_T is not None))
+    log2("  trunk %s -> dim %d ; trunk width %s ; frozen = %s"
+         % (args.trunk_features, features_np.shape[1], trunk_desc, frozen_T is not None))
     log2("  branch width %d depth %d ; p = %d ; base = %s"
          % (args.width, args.depth, args.p, args.base_smoother))
     log2("  parameters %d ; correction rank <= p = %d ; complement dim = %d"
          % (n_par, args.p, n - coarse.n_c))
+    if args.width < n - coarse.n_c:
+        log2("  NOTE: branch width %d < complement dim %d -- the branch cannot "
+             "represent the exact correction, and mu_F is capped by that alone "
+             "(tools/branch_rank_probe.py)" % (args.width, n - coarse.n_c))
 
     A_t = to_torch_sparse(A, dtype=torch.float64)
     AT_t = to_torch_sparse(A.T.tocsr(), dtype=torch.float64)
@@ -1078,10 +1544,8 @@ def main() -> int:
 
     ridge_info: Dict[str, object] = {"skipped": True}
     if not args.no_ridge:
-        ridge_info = fit_ridge(splits["train"], splits["val"], test, A.tocsc(),
-                               args.ridge_grid)
-        pred = ridge_info["predict"]
-        W = ridge_info["W"]
+        ridge_info = fit_ridge(splits["train"], splits["val"], A.tocsc(), args.ridge_grid)
+        pred, W = ridge_info["predict"], ridge_info["W"]
         rho["ridge"] = {"F": rho_of(test.EF, test.EF - pred(test.RF, W), A),
                         "C": rho_of(test.EC, test.EC - pred(test.RC, W), A)}
         stats["ridge"] = {c: reduction_stats(rho["ridge"][c]) for c in ("F", "C")}
@@ -1089,19 +1553,11 @@ def main() -> int:
              % (ridge_info["lambda"], stats["ridge"]["F"]["mean"],
                 ridge_info["train_mu_F"], ridge_info["val_mu_F"]))
 
-    # Trunk-span floor: the best ANY branch could have done against this trunk.
     with torch.no_grad():
         T = model.inner.trunk(features).numpy()
-    TtAT = T.T @ np.asarray(A @ T)
-    coef = np.linalg.solve(
-        TtAT + 1e-12 * (np.trace(TtAT) / max(args.p, 1)) * np.eye(args.p),
-        T.T @ np.asarray(A @ test.EF.T))
-    approx = (T @ coef).T                                # (N, n), sample-major
-    reach = energy_rows(approx, A) / np.maximum(energy_rows(test.EF, A), 1e-300)
-    trunk_floor = float(np.mean(np.sqrt(np.maximum(1.0 - reach, 0.0))))
-    rank_T = int(np.linalg.matrix_rank(T, tol=1e-10))
+    trunk_floor_val, rank_T = trunk_floor(T, test.EF, A)
     log2("  trunk span: rank(T) = %d of p = %d -> best-possible mu_F >= %.6f"
-         % (rank_T, args.p, trunk_floor))
+         % (rank_T, args.p, trunk_floor_val))
 
     per_mech: Dict[str, Dict[str, float]] = {}
     for k in ("deeponet", "damped_jacobi", "gauss_seidel"):
@@ -1157,16 +1613,19 @@ def main() -> int:
         "training_residual_in_ker_Pt_max": float(leak.max()),
         "coarse_residual_Pt_min": float(inrange.min()),
         "trunk": {"mode": args.trunk_features, "modes": args.trunk_modes, "p": args.p,
-                  "dim": int(features_np.shape[1]), "width": trunk_width,
-                  "depth": trunk_depth_desc, "frozen": frozen_T is not None,
+                  "dim": int(features_np.shape[1]), "description": trunk_desc,
+                  "frozen": frozen_T is not None,
                   "span_is_Rn": bool(frozen_T is not None and rank_T == n),
-                  "rank_T": rank_T, "best_possible_mu_F": trunk_floor,
-                  "note": "floor on mu_F for ANY branch against the trained trunk; "
-                          "the trunk span can be the binding constraint, not the net"},
-        "model": {"p": args.p, "width": args.width, "depth": args.depth,
+                  "rank_T": rank_T, "best_possible_mu_F": trunk_floor_val,
+                  "note": "floor on mu_F for ANY branch against this trunk; the trunk "
+                          "span can be the binding constraint, not the net"},
+        "model": {"p": args.p, "branch_width": args.width, "depth": args.depth,
                   "base_smoother": args.base_smoother, "parameters": int(n_par),
                   "homogeneous_in_r": True,
-                  "normalisation": "branch sees r/||r||_2; output rescaled by ||r||_2"},
+                  "normalisation": "branch sees r/||r||_2; output rescaled by ||r||_2",
+                  "branch_width_vs_complement": {
+                      "branch_width": args.width, "complement_dim": int(n - coarse.n_c),
+                      "can_represent_exact_correction": bool(args.width >= n - coarse.n_c)}},
         "training": {"epochs_requested": args.epochs,
                      "epochs_run": res["best"]["epochs_run"],
                      "best_epoch": res["best"]["epoch"],
@@ -1179,7 +1638,7 @@ def main() -> int:
         "scope": {
             "one_smoothing_step": True,
             "no_coarse_grid_correction_in_loss": True,
-            "no_vcycle": "Stage III",
+            "no_vcycle": "not in this stage",
             "bound_to_one_dof_count_and_ordering": True,
             "norms": "v^T A v on coefficient vectors; M_h is not exported, so no "
                      "continuous L^2(Gamma) norm is available",
@@ -1207,8 +1666,7 @@ def main() -> int:
                 r["median_rho_F"], r["std_rho_F"], r["p95_rho_F"],
                 r["mu_C"] / max(r["mu_F"], 1e-12)))
     log2("-" * 100)
-    for k, lab in (("exact_solve", "A^-1 (reference)"),
-                   ("ridge", "ridge (diagnostic)")):
+    for k, lab in (("exact_solve", "A^-1 (reference)"), ("ridge", "ridge (diagnostic)")):
         if k not in stats:
             continue
         r = metrics["reference_exact_solve"] if k == "exact_solve" else metrics["ridge_table"]
@@ -1217,7 +1675,8 @@ def main() -> int:
                 r["median_rho_F"], r["std_rho_F"], r["p95_rho_F"],
                 r["mu_C"] / max(r["mu_F"], 1e-12)))
     log2("")
-    dn, dj = metrics["headline_table"]["deeponet"], metrics["headline_table"]["damped_jacobi"]
+    dn = metrics["headline_table"]["deeponet"]
+    dj = metrics["headline_table"]["damped_jacobi"]
     log2("Does the DeepONet learn preferential reduction of the complement?")
     log2("  DeepONet      mu_F = %.4f   mu_C = %.4f   ratio mu_C/mu_F = %.2f"
          % (dn["mu_F"], dn["mu_C"], dn["mu_C"] / max(dn["mu_F"], 1e-12)))
@@ -1225,7 +1684,7 @@ def main() -> int:
          % (dj["mu_F"], dj["mu_C"], dj["mu_C"] / max(dj["mu_F"], 1e-12)))
     log2("  (ratio > 1 == the complement is reduced more than the coarse component, "
          "i.e. selective)")
-    log2("  floor imposed by the trained trunk's span: mu_F >= %.4f" % trunk_floor)
+    log2("  floor imposed by the trunk's span: mu_F >= %.4f" % trunk_floor_val)
     log2("")
     log2("Wrote %s/{metrics.json,history.csv,run.log,plots/}" % args.out_dir)
     log2("total wall clock: %.1f s" % (time.perf_counter() - t_start))

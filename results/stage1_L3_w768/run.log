@@ -18,25 +18,19 @@ Stage I -- learning the smoothing property (level 3)
   coarse residuals    r_C = A e_C:  min ||P^T r_C||/||r_C|| = 1.020e+00  (O(1))
 
 [2/5] building the network
-  trunk fourier -> dim 2176 ; trunk width 1024 depth frozen/orthonormal ; frozen = True
+  trunk fourier -> dim 2176 ; trunk width 1024, frozen/orthonormal ; frozen = True
   branch width 768 depth 4 ; p = 1024 ; base = none
   parameters 3342336 ; correction rank <= p = 1024 ; complement dim = 768
 
 [3/5] training on the complement component only
     epoch     0  train 14.912845  val mean sq rho_F 35.649027  *
-    epoch   100  train 0.170960  val mean sq rho_F 0.235605
     epoch   200  train 0.120319  val mean sq rho_F 0.167622
-    epoch   300  train 0.092174  val mean sq rho_F 0.133343  *
     epoch   400  train 0.062940  val mean sq rho_F 0.099762
-    epoch   500  train 0.040362  val mean sq rho_F 0.072609
     epoch   600  train 0.022049  val mean sq rho_F 0.051372  *
-    epoch   700  train 0.012656  val mean sq rho_F 0.040581  *
     epoch   800  train 0.007477  val mean sq rho_F 0.033532  *
-    epoch   900  train 0.006207  val mean sq rho_F 0.031452
     epoch  1000  train 0.005796  val mean sq rho_F 0.030377
-    epoch  1100  train 0.005475  val mean sq rho_F 0.029267  *
     epoch  1199  train 0.005371  val mean sq rho_F 0.028930  *
-  best validation mu_F = 0.170090 at epoch 1199 (1200 epochs run, 2048.1 s)
+  best validation mu_F = 0.170090 at epoch 1199 (1200 epochs run, 2019.1 s)
 
 [4/5] evaluating every smoother on the SAME test errors
   damped Jacobi: omega = 0.576426 chosen on validation mu_F (stability limit 0.755968)
@@ -62,7 +56,7 @@ Does the DeepONet learn preferential reduction of the complement?
   DeepONet      mu_F = 0.1456   mu_C = 1.0928   ratio mu_C/mu_F = 7.50
   Damped Jacobi mu_F = 0.4248   mu_C = 0.7380   ratio mu_C/mu_F = 1.74
   (ratio > 1 == the complement is reduced more than the coarse component, i.e. selective)
-  floor imposed by the trained trunk's span: mu_F >= 0.0000
+  floor imposed by the trunk's span: mu_F >= 0.0000
 
 Wrote results/stage1_L3_w768/{metrics.json,history.csv,run.log,plots/}
-total wall clock: 2092.3 s
+total wall clock: 2061.7 s

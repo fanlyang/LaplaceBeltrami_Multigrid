@@ -1,9 +1,9 @@
-# Dependencies for deeponet_smoother.py
+# Dependencies for stage1_smoothing_property.py and the two diagnostic tools.
 #
-# CPU-only PyTorch is enough: nothing here needs a GPU, and the level sizes this
-# is aimed at (n_dof = 1024 .. 4096) train in minutes on a laptop CPU.
+# CPU-only PyTorch is enough: nothing here needs a GPU, and the level this stage
+# runs on (n_dof = 1024) trains in ~20 minutes on a laptop CPU.
 #
-#   python -m pip install -r requirements-deeponet.txt
+#   python -m pip install -r requirements.txt
 #   python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 #
 # The second line is separate on purpose: the PyTorch CPU index does not carry
