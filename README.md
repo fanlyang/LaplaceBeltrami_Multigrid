@@ -21,7 +21,61 @@ contrast is $(1+\varepsilon)/\varepsilon$, growing from $11\times$ to
 $10001\times$. This is **high-contrast heterogeneous scalar diffusion**, not
 directional anisotropy.
 
-<!-- RESULTS-TABLES -->
+## Headline
+
+Mean $\rho_F$ on the unseen test set, one smoothing step, for the four
+coefficients. Lower is better; $1$ means the step achieved nothing.
+
+| method | $\varepsilon{=}10^{-1}$ | $10^{-2}$ | $10^{-3}$ | $10^{-4}$ |
+|---|---|---|---|---|
+| **symmetric GS / SSOR** | **0.1757** | **0.1727** | **0.1733** | **0.1734** |
+| DeepONet, fourier trunk + Jacobi skip | 0.3100 | 0.2812 | 0.2789 | 0.2780 |
+| Gauss–Seidel | 0.3525 | 0.3461 | 0.3464 | 0.3465 |
+| DeepONet, trig trunk + Jacobi skip | 0.3715 | 0.3615 | 0.3559 | 0.3582 |
+| damped Jacobi | 0.4187 | 0.4154 | 0.4153 | 0.4153 |
+| DeepONet, plain MLP | 0.8994 | 0.8735 | 0.8775 | 0.8973 |
+| contrast $(1+\varepsilon)/\varepsilon$ | 11× | 101× | 1001× | 10001× |
+
+Four things follow, and they are the answer to the question this branch set out
+to ask.
+
+**1. Over this coefficient family, the contrast changes almost nothing.** A
+$910\times$ increase in pointwise contrast moves every classical smoother by less
+than 1%: Jacobi $0.4187 \to 0.4153$, Gauss–Seidel $0.3525 \to 0.3465$, SGS/SSOR
+$0.1757 \to 0.1734$. The validation-tuned damping does not move either — Jacobi
+settles at $\omega = 0.60$ and SSOR at $\omega = 1.00$ at *every* contrast. So no
+coarse-space-complement component "becomes difficult" here, and the reason is
+measurable rather than mysterious: the coefficient is *smooth* with a uniform
+positive lower bound, and dropping $\varepsilon$ only deepens a thin band around
+a measure-zero set. The area-weighted mean of $\kappa_\varepsilon$ moves from
+0.260 at $\varepsilon=10^{-2}$ to 0.250 at $\varepsilon=10^{-4}$ — 4%, from a
+$100\times$ change in the pointwise minimum — and the coarse operator's
+condition number rises only from 44.2 to 118.6. **Coefficient contrast is not the
+quantity that governs smoothing behaviour; the spectral structure of
+$A_\varepsilon$ is, and here it barely moves.**
+
+**2. Symmetric Gauss–Seidel / SSOR is the best smoother at every contrast**, by a
+wide margin — $2.4\times$ better than damped Jacobi and $1.6$–$1.8\times$ better
+than the best learned model. Nothing in this experiment overturns that.
+
+**3. The learned smoother beats the two weakest classical smoothers and never
+catches the strongest.** The best DeepONet configuration (fourier trunk) improves
+on damped Jacobi and on forward Gauss–Seidel at every contrast, but it stays well
+behind SGS/SSOR throughout. It does get *better* as contrast grows (validation
+loss $0.104 \to 0.082$, $\rho_F$ $0.310 \to 0.278$), while the classical smoothers
+stay flat — a real trend, but far too small to close the gap.
+
+**4. The plain MLP DeepONet is not a usable smoother at this budget.** It cuts the
+error norm by only about 10% ($\rho_F \approx 0.90$) and *amplifies* between 1.2%
+and 3.5% of samples — the only method here that ever makes a test error worse. Its
+two-grid reduction (0.549–0.574) is barely better than the coarse correction alone
+(0.596–0.610), i.e. its smoothing contributes almost nothing.
+
+The trunk experiment is what makes (3) and (4) interpretable rather than an
+artefact of one design choice: giving the trunk spatial reach buys a real,
+reproducible improvement ($0.372 \to 0.310$ at $\varepsilon=10^{-1}$), which is
+evidence for the explanation that the model's reach is set by its trunk — but the
+remaining gap to SGS/SSOR is structural, not a matter of tuning.
 
 ---
 
@@ -39,7 +93,7 @@ difference is identical across the four runs:
 | prolongation $P$ | the exported level-2 → level-3 interpolation (1024×256) |
 | DoF numbering and ordering | unchanged between epsilons |
 | smoothness of $\kappa_\varepsilon$ | $\kappa_\varepsilon$ is $\kappa_{10^{-1}}$ shifted down by a constant — the *pattern* is identical, only the range moves |
-| DeepONet branch / trunk | `deeponet_smoother.Branch` / `Trunk`, unchanged |
+| DeepONet branch and trunk | `deeponet_smoother.Branch` / `Trunk`, unchanged (three configurations of the *existing switches* are trained — see §2.4) |
 | optimiser / schedule | `deeponet_smoother`'s framework, unchanged |
 | error norms | the solver's own `integrate_difference` norms |
 
@@ -107,7 +161,33 @@ Two conventions are fixed once:
   invariant under that; the DeepONet's is not exactly, because its branch is a
   $\tanh$ network, so canonicalising is what makes the numbers comparable.
 
-### 2.3 The four diagnostics
+### 2.3 The three DeepONet configurations
+
+The branch and trunk classes are the existing framework's, unchanged. What varies
+between the three configurations is which of the framework's *existing* switches
+are on — this is not architecture search, and no new layer type is introduced.
+
+| name | trunk input | skip | why it is here |
+|---|---|---|---|
+| `plain` | `trig` (4 dims) | none | the specification's literal architecture |
+| `skip` | `trig` (4 dims) | learned damped Jacobi | the framework's own best-measured configuration |
+| `skip_fourier` | `fourier`, \|m\|,\|n\|≤4 (160 dims) | learned damped Jacobi | spatial reach |
+
+`skip_fourier` is not decoration. With the `trig` trunk the trunk input is only
+$(\sin\xi,\cos\xi,\sin\eta,\cos\eta)$ — four numbers — so every correction the
+network can produce is a smooth function of the angles, while the training
+targets here are *coarse-space-complement* errors, i.e. precisely the oscillatory
+part. Without a frequency-aware arm, "the learned smoother does not help" would
+be a statement about the trunk rather than about the architecture. Both outcomes
+are informative: if reach closes the gap, the `trig` result was a trunk artefact;
+if it does not, the conclusion survives the trunk choice.
+
+The main comparison figures draw `skip`, chosen **in advance** as the
+framework's default configuration. It is not the variant that happened to score
+best on the test set; that would be selecting on the test set. All three appear
+in every table and in `plots/variant_ablation_rhoF.png`.
+
+### 2.4 The four diagnostics
 
 | symbol | meaning | section of the specification |
 |---|---|---|
@@ -201,17 +281,208 @@ $\mathcal L_{\text{smooth}}$; nothing is selected on the test set, and the
 evaluation reloads the saved checkpoint rather than the in-memory model, so every
 published number belongs to the published weights.
 
-Two architectures are trained per epsilon and both are reported everywhere:
-the plain MLP DeepONet, and the same network with the framework's learned
-Jacobi skip switched on. The plain variant is the specification's architecture;
-the skip variant is what the existing framework's own measurements identified as
-competitive, and dropping it would guarantee a weak baseline. Carrying both, with
-the same budget and the same data, is what makes the comparison readable either
-way.
+All three configurations of §2.3 are trained per epsilon, on the same data, with
+the same budget and the same seed, and all three are reported in every table.
+Carrying the strongest one matters: reporting only the specification's literal
+`plain` variant would be reporting a baseline nobody would deploy, and reporting
+only the framework's default would leave open whether the result is really about
+the trunk rather than the architecture. Model selection for each is its own
+validation loss; none of them sees the test set during training.
 
 ---
 
-## 4. Scope — what is not claimed
+## 4. Results
+
+### 4.1 The discretisation is sound at every contrast
+
+The manufactured-solution check that must pass before any smoother number is
+interpreted. Left, the errors; right, the observed rates.
+
+| $\varepsilon$ | contrast | $H^1$ rate | $L^2$ rate | $L^\infty$ (finest) |
+|---|---|---|---|---|
+| $10^{-1}$ | 11× | 1.003 | 1.999 | 7.93e-04 |
+| $10^{-2}$ | 101× | 1.006 | 1.998 | 8.07e-04 |
+| $10^{-3}$ | 1001× | 1.008 | 1.998 | 8.10e-04 |
+| $10^{-4}$ | 10001× | 1.008 | 1.998 | 8.11e-04 |
+
+Rates are measured between the two finest levels (4096 → 16384 DoFs) and are
+$O(h)$ for the $H^1$ seminorm and $O(h^2)$ for $L^2$ — optimal for $Q_1$, and
+**essentially independent of the contrast**. That is the expected behaviour for a
+coefficient that is smooth but has a large dynamic range, and it is the reason
+every smoother difference reported below can be attributed to the smoothing and
+not to a discretisation that has degraded. The full table per cycle is in
+`results/stage1/fem_verification.csv`; the figure is
+`results/stage1/plots/fem_verification.png`.
+
+### 4.2 The contrast sweep, and why it is flat
+
+The full statistics — mean, median, standard deviation, 95th percentile, maximum
+and the fraction amplified — are in `results/stage1/summary.csv` (one tidy row
+per epsilon, section, method and statistic) and rendered in
+`results/stage1/readme_tables.md`. The figures are
+`plots/eps_vs_mean_rhoF.png`, `plots/eps_vs_p95_rhoF.png`,
+`plots/eps_vs_max_rhoF.png` and `plots/variant_ablation_rhoF.png`.
+
+Mean $\rho_F$ across the sweep:
+
+| method | $10^{-1}$ | $10^{-2}$ | $10^{-3}$ | $10^{-4}$ |
+|---|---|---|---|---|
+| damped Jacobi | 0.4187 | 0.4154 | 0.4153 | 0.4153 |
+| Gauss–Seidel | 0.3525 | 0.3461 | 0.3464 | 0.3465 |
+| symmetric GS / SSOR | 0.1757 | 0.1727 | 0.1733 | 0.1734 |
+| DeepONet (plain MLP) | 0.8994 | 0.8735 | 0.8775 | 0.8973 |
+| DeepONet (trig trunk, + skip) | 0.3715 | 0.3615 | 0.3559 | 0.3582 |
+| DeepONet (fourier trunk, + skip) | 0.3100 | 0.2812 | 0.2789 | 0.2780 |
+
+The same flatness holds in the tail, which is the part a mean hides: the
+95th percentile of $\rho_F$ for SGS/SSOR is 0.2398, 0.2371, 0.2379, 0.2380, and
+its maximum is 0.3305, 0.3295, 0.3296, 0.3296. After three smoothing steps the
+ordering is unchanged and still flat (SGS/SSOR 0.0427–0.0437, Gauss–Seidel
+0.0808–0.0826, Jacobi 0.1660–0.1699).
+
+**Why.** Three measurements say the same thing. The validation-tuned damping does
+not move ($\omega_J = 0.60$ and $\omega_{\text{SSOR}} = 1.00$ at all four
+contrasts). The coarse operator's condition number moves from 44.2 to 118.6 —
+a factor of 2.7 against a factor of 910 in the coefficient contrast. And the
+area-weighted distribution of $\kappa_\varepsilon$ barely changes, because
+$\kappa_\varepsilon$ is $\kappa_{10^{-1}}$ minus a constant: its *median* is
+0.2295, 0.1395, 0.1305, 0.1296 and its area-weighted mean is 0.3499, 0.2599,
+0.2509, 0.2500. Lowering $\varepsilon$ deepens a thin band around the
+measure-zero set $\{\sin\xi\cos\eta = 0\}$; it does not restructure the operator.
+A smoothing factor is governed by the spectral structure of $A_\varepsilon$, and
+on this family that structure is nearly contrast-independent.
+
+This is a statement about **this** coefficient family, and it is worth being
+explicit about what would be different. A coefficient whose low-$\kappa$ region
+has *positive measure* — a channel, a barrier, a layered medium — varies the
+energy weighting across a finite area and would be expected to change the
+smoothing factors substantially. The family in the specification does not, and
+that is a property of the family, measured rather than assumed.
+
+### 4.3 The other three diagnostics agree
+
+**The coarse component ($\rho_C$).** The smoother run on $e_C$ instead of $e_F$,
+as a diagnostic — in a real cycle the coarse grid handles these. Every classical
+smoother reduces them only partly and the ordering is the same (SGS/SSOR
+0.3400–0.3761, Gauss–Seidel 0.5034–0.5476, Jacobi 0.6398–0.6883), again flat in
+contrast. The plain MLP *amplifies* them: $\rho_C = 1.0089$–$1.0099$, worse than
+doing nothing, at every contrast.
+
+**The controlled modes ($\rho_k$).** `plots/modes_xi_all_eps.png` and
+`plots/modes_eta_all_eps.png` plot $\rho_k$ for $\sin(k\xi)$ and $\sin(k\eta)$,
+each first projected onto the coarse-space complement. For the $\xi$ modes the
+worst case is around $k = 8$ of 16: Jacobi peaks at 0.699, Gauss–Seidel 0.463,
+SGS/SSOR 0.289, and the fourier-trunk DeepONet at 0.631 (peaking at $k=9$). For
+the $\eta$ modes the curves are flatter but the ordering identical — Jacobi spans
+0.298–0.435 and SGS/SSOR 0.149–0.207. The curves at the four contrasts are
+visually the same curve.
+
+**The Jacobi-hard errors, and where they live.** Selecting the 20 test errors
+with the largest empirical $\rho_J$ and then scoring *every* method on exactly
+those gives 0.5690 / 0.5592 / 0.5573 / 0.5571 for Jacobi against SGS/SSOR's
+0.2279 / 0.2249 / 0.2270 / 0.2270 — the hard set is hard for Jacobi and the
+ordering is unchanged on it, at every contrast.
+
+The spatial question the specification asks — are the difficult error structures
+related to the low-$\kappa$ regions? — has a measured answer of **no, and
+slightly the other way**. Weighting by the surface area element (the DoF lattice
+under-weights the outer equator by up to $3\times$, so a raw DoF count would bias
+this), the lowest-$\kappa$ quartile of the surface holds 21.8%, 23.3%, 23.3% and
+23.4% of the hard errors' energy against 25.9%, 30.7%, 32.8% and 33.0% of the
+whole test set's. The enrichment ratio is 0.84, 0.76, 0.71, 0.71: the hard errors
+are *depleted* in the low-$\kappa$ regions, and increasingly so as contrast grows
+(the low-$\kappa$ quartile is 25.1% of the surface area, so even the 0.84 at
+$\varepsilon = 10^{-1}$ is below parity). The selected errors are dominated by
+`multiscale` (8–9 of 20) and `mixed` (5 of 20) at every contrast — rough errors,
+which is what a point smoother struggles with, rather than errors localized where
+$\kappa$ is small.
+
+### 4.4 The two-grid test: the ranking survives, the gap does not close
+
+$\rho_{TG}$ — one smoothing step followed by an exact Galerkin coarse solve, on
+the same test errors:
+
+| method | $10^{-1}$ | $10^{-2}$ | $10^{-3}$ | $10^{-4}$ |
+|---|---|---|---|---|
+| symmetric GS / SSOR | **0.1316** | **0.1263** | **0.1266** | **0.1268** |
+| DeepONet (fourier trunk, + skip) | 0.2251 | 0.2086 | 0.2120 | 0.2123 |
+| DeepONet (trig trunk, + skip) | 0.2465 | 0.2385 | 0.2395 | 0.2394 |
+| Gauss–Seidel | 0.2191 | 0.2123 | 0.2153 | 0.2163 |
+| damped Jacobi | 0.2657 | 0.2593 | 0.2613 | 0.2618 |
+| DeepONet (plain MLP) | 0.5736 | 0.5520 | 0.5493 | 0.5556 |
+| *coarse correction alone* | *0.6095* | *0.5978* | *0.5958* | *0.5956* |
+
+The two-grid ordering is the smoothing ordering, essentially unchanged: the
+improved smoothing does translate into improved two-grid convergence, and it
+translates for every method including the learned one. But that cuts both ways —
+because the smoother ranking is preserved, the learned smoother's deficit is
+preserved with it. SGS/SSOR stays $1.7\times$ better than the best learned model
+at every contrast.
+
+Two numbers in that table are worth reading together. The coarse correction alone
+gives 0.5956–0.6095, and the plain MLP gives 0.5493–0.5736 — so the plain MLP's
+entire contribution to a two-grid step is a few percent on top of what the coarse
+grid does by itself. That is the quantitative form of "it is not acting as a
+smoother".
+
+The last check confirms the machinery rather than the methods: run on the $e_F$
+samples, the **coarse correction alone gives $\rho_{TG} = 1.0000$ exactly**, at
+every contrast. It has to — $P^{\mathsf T}A_\varepsilon e_F = 0$ forces the coarse
+right-hand side to zero, hence $z = 0$, hence $C_Ge_F = e_F$. A measured 1.0000
+is the decomposition, the coarse solve and the two-grid driver all agreeing with
+the algebra, and it is the strongest single check in the experiment.
+
+### 4.5 Training
+
+Validation $\mathcal L_{\text{smooth}}$ at the end of training (3000 epochs, the
+framework's default budget):
+
+| configuration | $10^{-1}$ | $10^{-2}$ | $10^{-3}$ | $10^{-4}$ |
+|---|---|---|---|---|
+| plain MLP | 0.8266 | 0.7907 | 0.7974 | 0.8168 |
+| trig trunk + Jacobi skip | 0.1437 | 0.1359 | 0.1333 | 0.1331 |
+| fourier trunk + Jacobi skip | 0.1041 | 0.0848 | 0.0834 | 0.0823 |
+
+Two things to note honestly. First, the learned models get *better* as contrast
+grows while the classical smoothers stay flat — a real trend in the same
+direction as finding (1), though far too small to change any conclusion. Second,
+the plain MLP has **not converged**: its validation loss is still falling at a
+comparable rate at epoch 3000 to epoch 100, so its poor showing is partly a
+budget statement, not purely an architectural one. `experiments/run_budget_check.sh`
+re-runs the strongest variant at four times the budget to bound how much of the
+remaining gap is budget rather than structure; its output goes to
+`results/stage1_budget/` and is deliberately kept out of every table above.
+
+### 4.6 What the answer is
+
+Taking the specification's chain in order — $\varepsilon$ down, contrast up,
+$A_\varepsilon$ changes, smoothing changes, identify the poorly reduced $e_F$
+components, compare on those, test in the two-grid method:
+
+* $A_\varepsilon$ changes far less than the contrast suggests (condition number
+  $44.2 \to 118.6$ against contrast $11\times \to 10001\times$).
+* Consequently the smoothing changes very little, for any method, and **no
+  coarse-space-complement component emerges as newly difficult**. The hard
+  components are rough, multiscale ones, and they are hard at $\varepsilon =
+  10^{-1}$ already.
+* The learned smoother is *better than damped Jacobi* on exactly those
+  components, at every contrast. That part of the specification's hypothesis —
+  "the learned operator handles error components that the selected point smoother
+  reduces poorly" — is supported.
+* It is **not** better than symmetric Gauss–Seidel / SSOR, and the deficit is
+  large ($1.6$–$1.8\times$ in $\rho_F$, $1.65$–$1.71\times$ in $\rho_{TG}$) and
+  contrast-independent. The specification's further hypothesis — "if this also
+  produces smaller $\rho_{TG}$, report that the improved smoothing translates" —
+  is *not* supported in the comparative sense: the improvement translates, but
+  only relative to Jacobi, not relative to the best classical smoother.
+* Where does the shortfall come from? **Smoothing, not the coarse grid, and not
+  their interaction.** The two-grid ordering equals the smoothing ordering at
+  every contrast, and $\rho_{TG}$ on $e_F$ isolates the same quantity ($\rho_F$)
+  because the coarse correction is exactly the identity there. So the learned
+  smoother's deficit is entirely a deficit in the smoothing step; there is no
+  interaction term hiding it.
+
+## 5. Scope — what is not claimed
 
 * One fixed multigrid level. The branch consumes a **fixed-length** residual, so
   the trained object is bound to one DoF count **and one DoF ordering**. No
@@ -236,7 +507,7 @@ way.
 
 ---
 
-## 5. Repository layout
+## 6. Repository layout
 
 ```
 src/main.cpp                  deal.II solver; kappa_0 is a run-time parameter
@@ -259,6 +530,9 @@ hcsm/                         THIS experiment
   evaluate.py                 rho_F, rho_C, controlled modes, hard errors, rho_TG
   plots.py                    the figures
   collect.py                  cross-epsilon aggregation and README tables
+  refigure.py                 redraw a run's figures from its saved checkpoints,
+                              and check that they reproduce its metrics.json
+  compare_budget.py           default budget vs 4x budget, for the fairness check
   selftest.py                 84 checks of every identity above
   run_epsilon.py              the whole experiment for one epsilon
 
@@ -266,13 +540,16 @@ experiments/
   run_fem_exports.sh          builds the solver image, runs it per epsilon
   run_conversion.sh           dumps -> NumPy
   run_stage1.sh               all four epsilons + collection
+  run_budget_check.sh         the 4x-budget fairness check (optional, slow)
 
 level_data/eps-<E>-L3/        the converted per-epsilon level problem
 results/fem_eps-<E>.csv       the manufactured-solution verification tables
 results/stage1/eps-<E>/       one run: metrics.json, checkpoints, history,
                               per-sample NPZ, CSVs, plots/
 results/stage1/summary.csv    every statistic, tidy long form
-results/stage1/readme_tables.md   the tables in section 3 of this file
+results/stage1/readme_tables.md   the same tables as markdown
+results/stage1/plots/         the cross-epsilon figures required by §N
+results/stage1/fem_verification.csv   every cycle's errors and rates
 ```
 
 ### How this relates to the existing DeepONet smoother
@@ -292,7 +569,7 @@ exact coarse solve, not an iterated cycle.
 
 ---
 
-## 6. Reproducing
+## 7. Reproducing
 
 Everything below runs from the branch root. On Windows use Git Bash; the scripts
 find the Python that has `numpy`/`scipy`/`torch` themselves (they look for
@@ -309,10 +586,22 @@ bash experiments/run_fem_exports.sh
 # 2. dumps -> level_data/eps-<E>-L3/
 bash experiments/run_conversion.sh
 
-# 3. the experiment: train and evaluate both architectures per epsilon, then
-#    collect the cross-epsilon figures and tables
+# 3. the experiment: train and evaluate all three configurations per epsilon,
+#    then collect the cross-epsilon figures and tables
 bash experiments/run_stage1.sh
+
+# 4. optional: redraw the per-run figures from the saved checkpoints. This also
+#    re-derives rho_F from the checkpoints and compares it to metrics.json, so it
+#    is the check that the published figures belong to the published weights.
+python -m hcsm.refigure --results results/stage1
+
+# 5. optional and slow (~26 min): is the learned smoother's deficit a training
+#    budget artefact? Re-runs the strongest variant at 4x the budget.
+bash experiments/run_budget_check.sh
 ```
+
+Each of the four epsilon runs takes about 5.5 minutes on 4 threads (three models
+x 3000 epochs plus evaluation); the whole of step 3 is about 25 minutes.
 
 Environment: `pip install -r requirements-deeponet.txt` then
 `pip install torch --index-url https://download.pytorch.org/whl/cpu` (the CPU

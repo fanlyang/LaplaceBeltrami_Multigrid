@@ -82,9 +82,14 @@ def plot_kappa_torus(problems: Sequence[Problem], path: str) -> None:
         norm = plt.Normalize(vmin=V.min(), vmax=V.max())
 
         ax = fig.add_subplot(2, n, j + 1, projection="3d")
-        ax.plot_surface(X, Y, Z, facecolors=cmap(norm(V)), rstride=1, cstride=1,
-                        shade=False, antialiased=False, linewidth=0)
+        ax.plot_surface(*_close_seam(X, Y, Z),
+                        facecolors=cmap(norm(_close_seam(V))),
+                        rstride=1, cstride=1, shade=False, antialiased=False,
+                        linewidth=0)
         ax.set_axis_off()
+        ax.set_xlim(-TORUS_LIM, TORUS_LIM)
+        ax.set_ylim(-TORUS_LIM, TORUS_LIM)
+        ax.set_zlim(-TORUS_LIM, TORUS_LIM)
         ax.set_box_aspect(TORUS_ASPECT, zoom=TORUS_ZOOM)
         ax.view_init(**TORUS_VIEW)
         ax.set_title(r"$\varepsilon = 10^{%d}$,  contrast %.0f$\times$"
@@ -251,8 +256,32 @@ def plot_mode_scan(
 TORUS_VIEW = dict(elev=24, azim=-90)
 TORUS_ASPECT = (1.0, 1.0 / 3.0, 1.0)
 #: The box aspect above flattens the drawing inside a square axes box, which
-#: leaves a lot of dead space; zoom scales the drawing up to fill it.
-TORUS_ZOOM = 1.75
+#: leaves a lot of dead space; zoom scales the drawing up to fill it. 1.15 is
+#: measured: at 1.75 and 1.35 the surface is clipped by the axes box and the
+#: torus's round silhouette becomes a rounded SQUARE, which reads as a geometry
+#: error rather than a rendering one.
+TORUS_ZOOM = 1.15
+TORUS_LIM = 3.05          # R + r = 3, plus a hair
+
+
+def _close_seam(*arrays):
+    """Wrap a periodic (xi, eta) lattice by one cell so the surface closes.
+
+    The DoF lattice runs from -pi + d to +pi in both angles, so a quad mesh drawn
+    straight from it has a one-cell gap where the parameter domain wraps -- a
+    visible white notch on an otherwise closed torus. Appending the first column
+    (and then the first row) continues the surface by exactly one cell, which for
+    a 2*pi-periodic field is the correct continuation, not an approximation.
+
+    Used only for the 3-D surface. An ``imshow`` of the same field must NOT be
+    wrapped, or the image would gain a duplicated row and column.
+    """
+    out = []
+    for A in arrays:
+        a = np.concatenate([A, A[:, :1]], axis=1)
+        a = np.concatenate([a, a[:1, :]], axis=0)
+        out.append(a)
+    return out[0] if len(out) == 1 else out
 
 
 def _field_figure(problem: Problem, fields, titles, diverging: bool, path: str,
@@ -279,13 +308,19 @@ def _field_figure(problem: Problem, fields, titles, diverging: bool, path: str,
         vmin = min(float(np.min(f)) for f in fields)
         norm = plt.Normalize(vmin, vmax)
 
+    Xw, Yw, Zw = _close_seam(X, Y, Z)
+
     for j, (f, title) in enumerate(zip(fields, titles)):
         _, _, Vg = lattice_grid(problem, np.asarray(f, dtype=np.float64))
 
         ax = fig.add_subplot(2, n, j + 1, projection="3d")
-        ax.plot_surface(X, Y, Z, facecolors=cmap(norm(Vg)), rstride=1, cstride=1,
-                        shade=False, antialiased=False, linewidth=0)
+        ax.plot_surface(Xw, Yw, Zw, facecolors=cmap(norm(_close_seam(Vg))),
+                        rstride=1, cstride=1, shade=False, antialiased=False,
+                        linewidth=0)
         ax.set_axis_off()
+        ax.set_xlim(-TORUS_LIM, TORUS_LIM)
+        ax.set_ylim(-TORUS_LIM, TORUS_LIM)
+        ax.set_zlim(-TORUS_LIM, TORUS_LIM)
         ax.set_box_aspect(TORUS_ASPECT, zoom=TORUS_ZOOM)
         ax.view_init(**TORUS_VIEW)
         ax.set_title(title, fontsize=8.5, color=style.INK, pad=2)
@@ -477,7 +512,9 @@ def plot_variant_bars(
         ax.set_ylim(-0.7, len(methods) - 0.3)
         style.style_axes(ax)
         ax.grid(axis="y", visible=False)
-        ax.margins(x=0.22)
+        # Room for the value labels and the Jacobi reference line, both of which
+        # sit outside the longest bar and would otherwise be clipped.
+        ax.margins(x=0.32)
 
     fig.suptitle(title, fontsize=10, fontweight="semibold", color=style.INK)
     fig.tight_layout(rect=(0, 0, 1, 0.92))

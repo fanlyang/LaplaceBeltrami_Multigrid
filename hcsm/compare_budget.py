@@ -40,8 +40,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--main", default="results/stage1")
     ap.add_argument("--budget", default="results/stage1_budget")
+    ap.add_argument("--arch", default="skip_fourier",
+                    help="which DeepONet configuration the 4x run trained")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    arch = args.arch
 
     main = load(args.main)
     budget = load(args.budget)
@@ -52,7 +55,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rows = []
 
     print("=" * 100)
-    print("Plain MLP DeepONet: default budget vs 4x budget")
+    print("DeepONet [%s]: default budget vs 4x budget" % arch)
     print("=" * 100)
     print("%-8s %10s %10s %10s | %8s %8s | %8s %8s %8s"
           % ("eps", "ep(3000)", "ep(12000)", "val(12000)", "rho 3k", "rho 12k",
@@ -65,13 +68,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         b = budget[tag]
         m = main.get(tag, {})
-        t_b = b.get("training", {}).get("plain", {})
-        t_m = m.get("training", {}).get("plain", {})
-        rho_b = b.get("rho_F", {}).get("deeponet_plain", {})
-        rho_m = m.get("rho_F", {}).get("deeponet_plain", {})
+        t_b = b.get("training", {}).get(arch, {})
+        t_m = m.get("training", {}).get(arch, {})
+        rho_b = b.get("rho_F", {}).get("deeponet_" + arch, {})
+        rho_m = m.get("rho_F", {}).get("deeponet_" + arch, {})
         jac = m.get("rho_F", {}).get("jacobi", {})
         sgs = m.get("rho_F", {}).get("sgs_ssor", {})
-        tg = b.get("rho_TG", {}).get("deeponet_plain", {})
+        tg = b.get("rho_TG", {}).get("deeponet_" + arch, {})
 
         print("%-8s %10s %10s %10.4f | %8.4f %8.4f | %8.4f %8.4f %8.4f"
               % (tag, t_m.get("best_epoch"), t_b.get("best_epoch"),
@@ -100,8 +103,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("-" * 100)
     print("wrote %s" % out_csv)
     print()
-    print("Reading: if rho(12k) is still well above the Jacobi and SGS columns, the")
-    print("plain MLP's deficit is not a budget artefact and the main comparison stands.")
+    print("Reading: if the 4x-budget column is still above the Jacobi and SGS")
+    print("columns, the deficit of DeepONet[%s] is not a training-budget" % arch)
+    print("artefact and the main comparison stands.")
     return 0
 
 
