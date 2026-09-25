@@ -154,11 +154,21 @@ def plot_eps_curves(
 
     fig, ax = plt.subplots(figsize=(7.0, 4.4))
 
+    # Draw the curves first and collect their end values, so the direct labels
+    # can be placed afterwards on the two extreme curves only. On these figures
+    # three of the four curves can sit within 0.05 of each other while spanning
+    # less than a line of text, so a fixed per-method offset cannot separate them
+    # for every statistic -- it separated them on mean rho_F and collided on
+    # rho_TG. The extremes are always separated, so labelling those two is both
+    # collision-free and the "selective" labelling the design calls for; the
+    # legend and the CSV tables carry identity for the rest.
+    series: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
     if reference_line is not None:
         ax.axhline(reference_line, color=style.INK_MUTED, lw=1.2, ls="--", zorder=1)
+        # Annotated at the LEFT end. At the right end it collided with the legend.
         ax.annotate(reference_label or "", xy=(eps_values[0], reference_line),
-                    xytext=(2, 4), textcoords="offset points",
-                    fontsize=7.5, color=style.INK_MUTED)
+                    xytext=(2, -11), textcoords="offset points",
+                    fontsize=7.5, color=style.INK_MUTED, va="top")
 
     for mi, meth in enumerate(methods):
         ys = []
@@ -171,9 +181,14 @@ def plot_eps_curves(
                 ls=st.get("ls", "-"), marker=st.get("marker", "o"),
                 markeredgecolor=style.SURFACE, markeredgewidth=1.2, zorder=3,
                 label=style.METHOD_LABEL.get(meth, meth))
-        style.label_line(ax, eps_values[-1], ys[-1],
-                         style.METHOD_SHORT.get(meth, meth),
-                         style.METHOD_COLOR.get(meth, style.CATEGORICAL[mi % 4]))
+        series[meth] = (eps_values, ys)
+
+    if series:
+        ends = {m: float(v[1][-1]) for m, v in series.items()}
+        for meth in (max(ends, key=ends.get), min(ends, key=ends.get)):
+            xs, ys = series[meth]
+            style.label_line(ax, xs[-1], ys[-1], style.METHOD_SHORT.get(meth, meth),
+                             style.METHOD_COLOR.get(meth), dy=7.0, ha="right")
 
     ax.set_xscale("log")
     ax.set_xticks(eps_values)
@@ -184,7 +199,11 @@ def plot_eps_curves(
     if ylim is not None:
         ax.set_ylim(*ylim)
     style.style_axes(ax)
-    ax.legend(loc="upper right", ncols=2)
+    # Upper centre: the curves live in a narrow band at the bottom of the axes
+    # (rho_F is between 0.17 and 0.42 while the axis runs to the "no reduction"
+    # line at 1.0), so the empty middle is the one place a legend cannot collide
+    # with a curve, a direct label or the reference annotation.
+    ax.legend(loc="upper center", ncols=2, fontsize=7.5)
     ax.margins(x=0.16)
     fig.tight_layout()
     _save(fig, path)

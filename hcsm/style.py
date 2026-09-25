@@ -185,12 +185,13 @@ def style_axes(ax) -> None:
     ax.tick_params(length=3, width=0.8)
 
 
-def label_line(ax, x, y, text, color, dx=6, dy=0, fontsize=8, va="center"):
+def label_line(ax, x, y, text, color, dx=6, dy=0, fontsize=8, va="center",
+               ha="left"):
     """Direct label at the end of a curve, in the curve's own colour.
 
     Text wears the series colour only here, where it *is* the mark's identity
     label; every other number on the figure stays in ink tokens.
     """
     ax.annotate(text, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
-                color=color, fontsize=fontsize, va=va, ha="left",
+                color=color, fontsize=fontsize, va=va, ha=ha,
                 fontweight="semibold")
