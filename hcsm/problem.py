@@ -36,9 +36,19 @@ import deeponet_smoother as ds
 # The coefficient family
 # ---------------------------------------------------------------------------
 
-#: The four coefficients of the controlled experiment. ``epsilon`` is the
-#: offset in ``kappa_epsilon = epsilon + sin^2(xi) cos^2(eta)``.
+#: The SCALAR family's epsilons -- the first experiment's sweep.
 EPSILONS: Tuple[float, ...] = (1e-1, 1e-2, 1e-3, 1e-4)
+
+#: The TENSOR family's epsilons: 1 is the isotropic control (D = I), then the
+#: anisotropy 1/eps grows to 10000:1. Unlike the scalar family, where eps only
+#: shifted a smooth coefficient, here eps controls a genuine directional
+#: weighting and eps -> 0 makes the xi coupling vanish.
+TENSOR_EPSILONS: Tuple[float, ...] = (1.0, 1e-1, 1e-2, 1e-3, 1e-4)
+
+#: The two coefficient families the solver supports. "tensor" is
+#: D_eps = eps e_xi (x) e_xi + e_eta (x) e_eta; "scalar" is the first
+#: experiment's kappa_eps = eps + sin^2 cos^2.
+COEFFICIENTS: Tuple[str, ...] = ("tensor", "scalar")
 
 #: Torus radii. Must match TorusGeometry in src/main.cpp.
 R_MAJOR = 2.0
@@ -59,10 +69,38 @@ def kappa_epsilon(angles: np.ndarray, eps: float) -> np.ndarray:
     """kappa_epsilon(xi, eta) = epsilon + sin^2(xi) cos^2(eta).
 
     Evaluated at the physical support points of the level DoFs, using the same
-    angle chart as the C++ solver. ``angles`` is (n, 2).
+    angle chart as the C++ solver. ``angles`` is (n, 2). This is the SCALAR
+    family's coefficient.
     """
     xi, eta = angles[:, 0], angles[:, 1]
     return eps + np.sin(xi) ** 2 * np.cos(eta) ** 2
+
+
+def anisotropy(eps: float, coefficient: str = "tensor") -> float:
+    """How many times stronger the eta direction is than the xi direction.
+
+    For the tensor family D_eps = eps e_xi(x)e_xi + e_eta(x)e_eta the weights
+    are eps and 1, so the ratio is exactly 1/eps. For the scalar family there
+    is no direction, and the analogous quantity is the pointwise contrast.
+    """
+    if coefficient == "tensor":
+        return 1.0 / eps
+    return (1.0 + eps) / eps
+
+
+def expected_coefficient(angles: np.ndarray, eps: float,
+                         coefficient: str) -> np.ndarray:
+    """The field the solver should have written into coeff-<tag>.txt.
+
+    For the tensor family this is a CONSTANT: D_eps is eps in the xi direction
+    and 1 in the eta direction at every point, so there is no position-dependent
+    scalar to sample and the exporter writes eps itself. Inventing a scalar
+    proxy for the tensor here would make the verification check a quantity the
+    solver never used.
+    """
+    if coefficient == "tensor":
+        return np.full(angles.shape[0], float(eps))
+    return kappa_epsilon(angles, eps)
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +118,13 @@ class Problem:
     A            A_epsilon, CSR, n x n, symmetric positive definite
     coords       physical support points of the DoFs, (n, 3)
     angles       the same points in the torus chart, (n, 2) = (xi, eta)
-    coeff        kappa_epsilon sampled at the support points, (n,)
+    coeff        the exported coefficient field, (n,). For the SCALAR family
+                 this is kappa_epsilon at the support points; for the TENSOR
+                 family the coefficient is position-independent and this is
+                 the constant eps, which is what the solver exports.
     P            prolongation from the next coarser level, n x m
     A_H          P^T A P, the Galerkin coarse operator used by Stage I
+    coefficient  which family this problem was assembled with
     """
 
     eps: float
@@ -94,6 +136,7 @@ class Problem:
     A_H: sp.csr_matrix
     level: int = 0
     A_H_assembled: Optional[sp.csr_matrix] = None
+    coefficient: str = "tensor"
     diagnostics: Dict[str, float] = field(default_factory=dict)
     _coarse_solve: Callable[[np.ndarray], np.ndarray] = field(
         default=None, repr=False
@@ -164,6 +207,30 @@ class Problem:
         e_C = self.P @ z
         return e_C, e - e_C
 
+    def apply_Q(self, v: np.ndarray) -> np.ndarray:
+        """Q_epsilon v = v - P (P^T A_epsilon P)^{-1} P^T A_epsilon v.
+
+        The complement projector of the specification, applied by a coarse
+        SOLVE. No dense inverse and no projector matrix is ever formed: the
+        factorisation of A_H is reused for every right-hand side. This is
+        exactly the second component of ``decompose``, named for the symbol the
+        experiment uses.
+
+        Note the Galerkin diagnostic Q_epsilon and the actual V-cycle are
+        different objects and are kept distinct: Q_epsilon uses the Galerkin
+        coarse operator P^T A P, while the V-cycle the solver runs uses the
+        independently REDISCRETIZED level operators, whose difference on this
+        curved surface is measured and recorded in ``diagnostics``.
+        """
+        return self.decompose(v)[1]
+
+    def apply_Q_batch(self, V: np.ndarray) -> np.ndarray:
+        """apply_Q for a batch of vectors, shape (b, n)."""
+        out = np.empty_like(V, dtype=np.float64)
+        for i in range(V.shape[0]):
+            out[i] = self.apply_Q(V[i])
+        return out
+
     def decomposition_errors(self, e: np.ndarray) -> Dict[str, float]:
         """Normalised residuals of the two identities the decomposition claims.
 
@@ -209,9 +276,11 @@ class Problem:
 # ---------------------------------------------------------------------------
 
 
-def level_dir(root: str, eps: float, level: int = 3) -> str:
-    """Where the converted data for one (epsilon, level) lives."""
-    return os.path.join(root, "eps-%s-L%d" % (eps_tag(eps), level))
+def level_dir(root: str, eps: float, level: int = 3,
+              coefficient: str = "tensor") -> str:
+    """Where the converted data for one (family, epsilon, level) lives."""
+    return os.path.join(root, "%s-eps-%s-L%d"
+                        % (coefficient, eps_tag(eps), level))
 
 
 def load_problem(
@@ -219,16 +288,20 @@ def load_problem(
     eps: float,
     level: int = 3,
     verbose: bool = False,
+    coefficient: str = "tensor",
 ) -> Problem:
     """Load one epsilon's level problem and verify it before trusting it.
 
     ``ds.load_level`` already checks shape, symmetry, finite entries and
     positive definiteness (sparsely). On top of that this function verifies that
-    the exported coefficient really is ``kappa_epsilon`` at those coordinates --
-    a mismatch would silently make the two-grid and energy numbers refer to a
+    the exported coefficient is what the requested family should produce -- a
+    mismatch would silently make the two-grid and energy numbers refer to a
     different problem than the one being reported.
     """
-    d = level_dir(root, eps, level)
+    if coefficient not in COEFFICIENTS:
+        raise SystemExit("unknown coefficient family %r; expected one of %s"
+                         % (coefficient, ", ".join(COEFFICIENTS)))
+    d = level_dir(root, eps, level, coefficient)
     ld = ds.load_level(d, verbose=verbose)
 
     A = ld.A.tocsr()
@@ -244,19 +317,31 @@ def load_problem(
     P.sum_duplicates()
     P.sort_indices()
 
-    # -- the coefficient is kappa_epsilon, not something else --------------
+    # -- the coefficient is what this family should produce ----------------
     if ld.coeff is not None:
-        expected = kappa_epsilon(ld.angles, eps)
+        expected = expected_coefficient(ld.angles, eps, coefficient)
         err = float(np.max(np.abs(ld.coeff - expected)))
-        scale = float(np.max(np.abs(expected)))
-        if err > 1e-10 * max(scale, 1.0):
+        scale = max(float(np.max(np.abs(expected))), 1.0)
+        if err > 1e-10 * scale:
             raise SystemExit(
-                "the exported coefficient is not kappa_%.0e: max |coeff - "
-                "kappa_epsilon| = %.3e (scale %.3e)" % (eps, err, scale)
-            )
+                "the exported coefficient is not %s at epsilon=%.0e: max "
+                "|coeff - expected| = %.3e (scale %.3e)"
+                % (coefficient, eps, err, scale))
         coeff = ld.coeff
     else:
-        coeff = kappa_epsilon(ld.angles, eps)
+        coeff = expected_coefficient(ld.angles, eps, coefficient)
+
+    # For the tensor family the coefficient is position-independent by
+    # construction. Check that the file really is constant rather than merely
+    # close to the constant eps: a spatially varying field here would mean the
+    # solver assembled something other than D_eps.
+    if coefficient == "tensor":
+        spread = float(np.max(coeff) - np.min(coeff))
+        if spread > 1e-12 * max(float(np.max(np.abs(coeff))), 1.0):
+            raise SystemExit(
+                "the tensor coefficient should be constant, but the exported "
+                "field varies by %.3e -- the assembly is not the uniform "
+                "directional tensor D_eps" % spread)
 
     # -- Galerkin coarse operator -----------------------------------------
     A_H = (P.T @ (A @ P)).tocsr()
@@ -275,7 +360,14 @@ def load_problem(
 
     diag: Dict[str, float] = {
         "eps": float(eps),
-        "contrast": float(contrast(eps)),
+        "coefficient": 0.0 if coefficient == "tensor" else 1.0,
+        "coefficient_name": coefficient,
+        # "How extreme is the coefficient": for the tensor family the ratio of
+        # the eta weight to the xi weight (1/eps), for the scalar family the
+        # pointwise contrast (1+eps)/eps. One number, one meaning per family --
+        # a field called "contrast" carried over from the scalar family would be
+        # meaningless for a tensor.
+        "anisotropy": float(anisotropy(eps, coefficient)),
         "n_dof": float(A.shape[0]),
         "n_coarse": float(A_H.shape[0]),
         "n_side": float(max(2, int(round(np.sqrt(A.shape[0]))))),
@@ -316,6 +408,7 @@ def load_problem(
         P=P,
         A_H=A_H,
         level=level,
+        coefficient=coefficient,
         A_H_assembled=A_H_assembled,
         diagnostics=diag,
         _coarse_solve=lu,

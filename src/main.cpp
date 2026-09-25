@@ -52,6 +52,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <random>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -165,6 +166,10 @@ namespace LaplaceBeltrami
 
     // kappa_epsilon(xi, eta) = epsilon + sin^2(xi) cos^2(eta)
     //
+    // The SCALAR coefficient of the first experiment. It is kept so that
+    // experiment stays reproducible from this branch, but it is no longer the
+    // default: see Coefficient below.
+    //
     // The second term vanishes on {sin(xi) = 0} U {cos(eta) = 0} and equals
     // one on {|sin(xi) cos(eta)| = 1}, so the coefficient really does attain
     // both kappa_min = epsilon and kappa_max = 1 + epsilon on the torus.
@@ -175,7 +180,117 @@ namespace LaplaceBeltrami
 
       return kappa_offset() + sin_xi * sin_xi * cos_eta * cos_eta;
     }
+
+
+    /* ----------------------------------------------------------------
+     * The orthonormal tangent frame
+     *
+     *     e_xi  = (-sin xi, 0, cos xi)
+     *     e_eta = (-sin eta cos xi, cos eta, -sin eta sin xi)
+     *
+     * Both are unit vectors, and they are orthogonal: the parametrisation
+     * has d/dxi = h_xi e_xi and d/deta = r e_eta with h_xi = R + r cos eta,
+     * and the metric is diagonal, so {e_xi, e_eta} is an orthonormal frame
+     * for the tangent plane at every point.
+     * ---------------------------------------------------------------- */
+    struct Frame
+    {
+      Tensor<1, 3> e_xi;
+      Tensor<1, 3> e_eta;
+    };
+
+
+    inline Frame frame_of(const Angles &a)
+    {
+      const double sin_xi  = std::sin(a.xi);
+      const double cos_xi  = std::cos(a.xi);
+      const double sin_eta = std::sin(a.eta);
+      const double cos_eta = std::cos(a.eta);
+
+      Frame frame;
+      frame.e_xi[0]  = -sin_xi;
+      frame.e_xi[1]  = 0.0;
+      frame.e_xi[2]  = cos_xi;
+
+      frame.e_eta[0] = -sin_eta * cos_xi;
+      frame.e_eta[1] = cos_eta;
+      frame.e_eta[2] = -sin_eta * sin_xi;
+
+      return frame;
+    }
+
+
+    /* ----------------------------------------------------------------
+     * The anisotropic tensor
+     *
+     *     D_epsilon = epsilon e_xi (x) e_xi + e_eta (x) e_eta
+     *
+     * written as a rank-two ambient tensor. It is exactly the surface
+     * tensor: D n = 0 for the unit normal n, so applying it to a
+     * tangential gradient returns a tangential vector, and on the frame it
+     * acts as D e_xi = epsilon e_xi, D e_eta = e_eta.
+     *
+     * Contrast: the strong direction eta carries weight 1 and the weak
+     * direction xi carries weight epsilon, so the ratio is 1/epsilon and
+     * grows without bound as epsilon -> 0. At epsilon = 0 the xi coupling
+     * disappears entirely and the operator decouples into independent
+     * one-dimensional problems along eta -- which is the regime a point
+     * smoother is expected to handle badly, and the reason this family was
+     * chosen. epsilon = 1 is the isotropic operator, i.e. the identity
+     * tensor, and is included as the control.
+     * ---------------------------------------------------------------- */
+    inline Tensor<2, 3> tensor_of(const Frame &frame)
+    {
+      const double eps = kappa_offset();
+
+      Tensor<2, 3> D;
+      for (unsigned int i = 0; i < 3; ++i)
+        for (unsigned int j = 0; j < 3; ++j)
+          D[i][j] = eps * frame.e_xi[i] * frame.e_xi[j] +
+                    frame.e_eta[i] * frame.e_eta[j];
+
+      return D;
+    }
   } // namespace TorusGeometry
+
+
+  /* ==================================================================
+   *
+   * 1b. Which coefficient
+   *
+   * Two coefficient families are supported, chosen on the command line:
+   *
+   *   scalar : -div(kappa_eps grad u) + u = f,  kappa_eps = eps + sin^2 cos^2
+   *            the first experiment (high-contrast scalar diffusion)
+   *   tensor : -div(D_eps grad u) + u = f,
+   *            D_eps = eps e_xi (x) e_xi + e_eta (x) e_eta
+   *            the anisotropic experiment, and the default
+   *
+   * The scalar family is kept so the first experiment remains reproducible
+   * from this branch; every other part of the program is shared, which is
+   * the point -- the two experiments differ in the coefficient and in
+   * nothing else.
+   *
+   * ================================================================== */
+
+  enum class Coefficient
+  {
+    tensor,
+    scalar
+  };
+
+
+  inline Coefficient &coefficient()
+  {
+    static Coefficient which = Coefficient::tensor;
+    return which;
+  }
+
+
+  inline std::string coefficient_name(const Coefficient which)
+  {
+    return which == Coefficient::tensor ? "tensor D_eps" : "scalar kappa_eps";
+  }
 
 
   // Coefficient of the zero-order term of the PDE.
@@ -289,10 +404,61 @@ namespace LaplaceBeltrami
   };
 
 
+  /* ----------------------------------------------------------------
+   * The TENSOR forcing.
+   *
+   *     f_eps = -div_Gamma(D_eps grad_Gamma u) + u,   u = sin(xi) sin(eta)
+   *
+   * Derivation, in the angle coordinates. With the orthonormal frame
+   * {e_xi, e_eta} the surface gradient is
+   *
+   *     grad u = (u_xi / h) e_xi + (u_eta / r) e_eta,
+   *
+   * and D_eps acts on the frame as D e_xi = eps e_xi, D e_eta = e_eta, so
+   * the flux is
+   *
+   *     D_eps grad u = eps (u_xi / h) e_xi + (u_eta / r) e_eta.
+   *
+   * For a field with PHYSICAL components (a, b) in an orthogonal frame the
+   * surface divergence is
+   *
+   *     div_Gamma = 1/(h r) [ d_xi(r a) + d_eta(h b) ],
+   *
+   * which gives
+   *
+   *     div_Gamma(D grad u)
+   *       = 1/(h r) [ eps r d_xi(u_xi/h) + d_eta(h u_eta/r) ].
+   *
+   * With u = sin xi sin eta we have u_xixi = u_etaeta = -u and
+   * d_eta(h) = -r sin eta, so
+   *
+   *     div_Gamma(D grad u) = -eps u/h^2 - (sin eta cos eta / h) sin xi sin eta - u,
+   *
+   * and therefore
+   *
+   *     f_eps = u [ 2 + cos(eta)/h + eps/h^2 ],   h = R + r cos(eta).
+   *
+   * This closed form was checked against an independent finite-difference
+   * evaluation of -div_Gamma(D_eps grad u) + u before being coded, and the
+   * assembled problem is checked again by the manufactured-solution
+   * convergence study. At eps = 1 it reduces to the isotropic
+   * -Delta_Gamma u + u, which is the control.
+   * ---------------------------------------------------------------- */
   template <>
   double RightHandSide<3>::value(const Point<3> &p, const unsigned int) const
   {
     const TorusGeometry::Angles angles = TorusGeometry::angles_of(p);
+
+    if (coefficient() == Coefficient::tensor)
+      {
+        const double sin_xi  = std::sin(angles.xi);
+        const double cos_eta = std::cos(angles.eta);
+        const double h       = TorusGeometry::h_xi(angles.eta);
+        const double eps     = TorusGeometry::kappa_offset();
+
+        return sin_xi * std::sin(angles.eta) *
+               (2.0 + cos_eta / h + eps / (h * h));
+      }
 
     const double sin_xi  = std::sin(angles.xi);
     const double cos_xi  = std::cos(angles.xi);
@@ -560,6 +726,11 @@ namespace LaplaceBeltrami
     Errors compute_error() const;
     void   output_results(const unsigned int cycle) const;
 
+    // Compare the exported prolongation against MGTransferPrebuilt, which is
+    // the transfer the V-cycle actually uses. See the definition for why this
+    // matters and what the restriction convention is.
+    void verify_transfer() const;
+
     // Write the per-level data the learned smoother is trained on: the
     // physical coordinates of the level degrees of freedom (in the same
     // ordering as mg_matrices[level]), the coefficient sampled at those
@@ -622,6 +793,11 @@ namespace LaplaceBeltrami
     std::unique_ptr<mg::Matrix<Vector<double>>> mg_interface_up;
     std::unique_ptr<mg::Matrix<Vector<double>>> mg_interface_down;
     std::unique_ptr<Multigrid<Vector<double>>>  mg;
+
+    // The refinement cycle the current dumps belong to, so verify_transfer()
+    // can find the P-level-<l>-cycle-<c>.coo file that was just written.
+    // Mutable because verify_transfer() is const: it only reads state.
+    mutable unsigned int current_cycle = 0;
   };
 
 
@@ -745,22 +921,45 @@ namespace LaplaceBeltrami
 
 
     // -- quadrature loop ---------------------------------------------
+    //
+    // This is the ONLY place the coefficient enters the bilinear form, and it
+    // is shared by the active system and the multigrid levels (both are driven
+    // by this cell_worker through MeshWorker::mesh_loop). So the tensor is
+    // applied consistently to active and level assembly by construction, not by
+    // remembering to make the same edit twice.
     for (unsigned int q = 0; q < n_q_points; ++q)
       {
         const Point<spacedim> &p = fe_values.quadrature_point(q);
         const TorusGeometry::Angles angles = TorusGeometry::angles_of(p);
 
-        const double kappa_value = TorusGeometry::kappa(angles.xi, angles.eta);
+        // The coefficient as a rank-two tensor on the tangent plane. For the
+        // scalar family it is kappa times the identity, for the tensor family
+        // it is eps e_xi (x) e_xi + e_eta (x) e_eta; either way the diffusion
+        // term is grad phi_i . (D grad phi_j), which is the same expression the
+        // weak form has and needs no special case below.
+        Tensor<2, 3> D;
+        if (coefficient() == Coefficient::tensor)
+          {
+            D = TorusGeometry::tensor_of(TorusGeometry::frame_of(angles));
+          }
+        else
+          {
+            const double kappa_value =
+              TorusGeometry::kappa(angles.xi, angles.eta);
+            for (unsigned int a = 0; a < 3; ++a)
+              for (unsigned int b = 0; b < 3; ++b)
+                D[a][b] = (a == b) ? kappa_value : 0.0;
+          }
 
 
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
           {
             for (unsigned int j = 0; j < dofs_per_cell; ++j)
               {
-                // kappa grad phi_i . grad phi_j + phi_i phi_j
+                // grad phi_i . D grad phi_j + phi_i phi_j
                 const double diffusion =
-                  kappa_value * (fe_values.shape_grad(i, q) *
-                                 fe_values.shape_grad(j, q));
+                  fe_values.shape_grad(i, q) *
+                  (D * fe_values.shape_grad(j, q));
 
                 const double reaction = reaction_coefficient *
                                         fe_values.shape_value(i, q) *
@@ -1095,6 +1294,137 @@ namespace LaplaceBeltrami
     stats.iterations = solver_control.last_step();
 
     return stats;
+  }
+
+
+  /* ==================================================================
+   *
+   * 9b. Checking the exported transfer against deal.II's own
+   *
+   * The learned smoother is trained on P as exported by export_level_data().
+   * The V-cycle uses MGTransferPrebuilt. If those two are not the same
+   * operator, every reported number refers to a transfer the solver never
+   * performs -- and the mismatch would be invisible, because both are
+   * "a prolongation".
+   *
+   * So the exported P is compared against the object that is actually used:
+   * for each level, MGTransferPrebuilt::prolongate is applied to a random
+   * coarse vector and compared with P times that vector, and
+   * MGTransferPrebuilt::restrict_and_add is compared with P^T times a random
+   * fine vector. Both are written to transfer-check-<level>.txt.
+   *
+   * Note the restriction convention: MGTransferPrebuilt restricts the
+   * RESIDUAL and ADDS into the coarse vector, so the check is
+   * dst += P^T src rather than dst = P^T src.
+   *
+   * ================================================================== */
+
+  template <int dim, int spacedim>
+  void LaplaceBeltramiProblem<dim, spacedim>::verify_transfer() const
+  {
+    const unsigned int n_levels = triangulation.n_levels();
+
+    std::ofstream out("transfer-check.txt");
+    AssertThrow(out, ExcMessage("Could not open transfer-check.txt"));
+    out << std::setprecision(6) << std::scientific;
+    out << "# level n_coarse n_fine max|P_mg * v - P_exported * v| "
+           "max|R_mg * w - P_exported^T * w| rel_prolongation rel_restriction\n";
+
+    for (unsigned int level = 1; level < n_levels; ++level)
+      {
+        const unsigned int coarse = level - 1;
+
+        // -- the exported operator, re-read from the file we wrote ----
+        //
+        // Deliberately re-read rather than kept in memory: the thing under
+        // test is the FILE the training pipeline consumes, not an in-process
+        // copy of what we believe we wrote into it.
+        const std::string  p_name = "P-level-" + std::to_string(level) +
+                                   "-cycle-" + std::to_string(current_cycle) +
+                                   ".coo";
+        std::ifstream p_file(p_name);
+        if (!p_file)
+          continue; // --no-dump: nothing was exported to check against
+
+        unsigned int p_rows = 0, p_cols = 0;
+        p_file >> p_rows >> p_cols;
+
+        const unsigned int n_fine   = dof_handler.n_dofs(level);
+        const unsigned int n_coarse = dof_handler.n_dofs(coarse);
+
+        AssertThrow(p_rows == n_fine && p_cols == n_coarse,
+                    ExcMessage("exported P has shape " +
+                               std::to_string(p_rows) + "x" +
+                               std::to_string(p_cols) + " but level " +
+                               std::to_string(level) + " has " +
+                               std::to_string(n_fine) + " fine and " +
+                               std::to_string(n_coarse) + " coarse DoFs"));
+
+        std::vector<std::vector<std::pair<unsigned int, double>>> rows(p_rows);
+
+        unsigned int row = 0, col = 0;
+        double       value = 0.0;
+        while (p_file >> row >> col >> value)
+          rows[row].emplace_back(col, value);
+
+        // -- random coarse vector, prolongate -------------------------
+        Vector<double> coarse_vec(n_coarse);
+        Vector<double> fine_mg(n_fine);
+        Vector<double> fine_exported(n_fine);
+
+        std::mt19937                           rng(20260925u + level);
+        std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+        for (unsigned int i = 0; i < n_coarse; ++i)
+          coarse_vec[i] = uniform(rng);
+
+        fine_mg = 0.0;
+        mg_transfer->prolongate(level, fine_mg, coarse_vec);
+
+        fine_exported = 0.0;
+        for (unsigned int i = 0; i < p_rows; ++i)
+          for (const auto &entry : rows[i])
+            fine_exported[i] += entry.second * coarse_vec[entry.first];
+
+        double prolongation_error = 0.0;
+        for (unsigned int i = 0; i < n_fine; ++i)
+          prolongation_error =
+            std::max(prolongation_error,
+                     std::abs(fine_mg[i] - fine_exported[i]));
+
+        // -- random fine vector, restrict -----------------------------
+        Vector<double> fine_vec(n_fine);
+        Vector<double> coarse_mg(n_coarse);
+        Vector<double> coarse_exported(n_coarse);
+
+        for (unsigned int i = 0; i < n_fine; ++i)
+          fine_vec[i] = uniform(rng);
+
+        coarse_mg = 0.0;
+        mg_transfer->restrict_and_add(level, coarse_mg, fine_vec);
+
+        coarse_exported = 0.0;
+        for (unsigned int i = 0; i < p_rows; ++i)
+          for (const auto &entry : rows[i])
+            coarse_exported[entry.first] += entry.second * fine_vec[i];
+
+        double restriction_error = 0.0;
+        for (unsigned int i = 0; i < n_coarse; ++i)
+          restriction_error =
+            std::max(restriction_error,
+                     std::abs(coarse_mg[i] - coarse_exported[i]));
+
+        // Normalised by the size of the vectors involved, so "small" means
+        // small relative to the data and not merely small in absolute terms.
+        const double scale = coarse_vec.linfty_norm();
+        out << level << ' ' << n_coarse << ' ' << n_fine << ' '
+            << prolongation_error << ' ' << restriction_error << ' '
+            << (scale > 0 ? prolongation_error / scale : 0.0) << ' '
+            << (scale > 0 ? restriction_error / scale : 0.0) << '\n';
+
+        std::cout << "   transfer check level " << level << ": max|P_mg - P| = "
+                  << prolongation_error << ", max|R_mg - P^T| = "
+                  << restriction_error << std::endl;
+      }
   }
 
 
@@ -1513,6 +1843,15 @@ namespace LaplaceBeltrami
         }
 
         // (b) coefficient sampled at the same points ----------------------
+        //
+        // For the scalar family this is kappa_epsilon, a genuinely
+        // position-dependent field. For the TENSOR family the coefficient is
+        // position-INDEPENDENT -- D_eps is eps in the xi direction and 1 in the
+        // eta direction, at every point -- so the honest export is the constant
+        // eps, and the file below says so rather than inventing a scalar proxy
+        // for the tensor. Anything conditioning the network on the operator has
+        // to consume eps itself (or the frame), and the loader is written to
+        // expect exactly that.
         {
           std::ofstream out("coeff-" + tag + ".txt");
           AssertThrow(out, ExcMessage("Could not open coeff-" + tag));
@@ -1521,7 +1860,10 @@ namespace LaplaceBeltrami
           for (const Point<spacedim> &p : support_points[level])
             {
               const TorusGeometry::Angles a = TorusGeometry::angles_of(p);
-              out << TorusGeometry::kappa(a.xi, a.eta) << "\n";
+              out << (coefficient() == Coefficient::tensor
+                        ? TorusGeometry::kappa_offset()
+                        : TorusGeometry::kappa(a.xi, a.eta))
+                  << "\n";
             }
         }
 
@@ -1771,12 +2113,23 @@ namespace LaplaceBeltrami
   void LaplaceBeltramiProblem<dim, spacedim>::run()
   {
     // Say which coefficient is being solved for, so that a log is
-    // self-describing: the same binary produces four different problems.
+    // self-describing: the same binary produces several different problems.
     const double epsilon = TorusGeometry::kappa_offset();
-    std::cout << "Coefficient: kappa(xi,eta) = " << epsilon
-              << " + sin^2(xi) cos^2(eta)   [min " << epsilon << ", max "
-              << 1.0 + epsilon << ", contrast " << (1.0 + epsilon) / epsilon
-              << "]" << std::endl;
+    std::cout << "Coefficient: " << coefficient_name(coefficient());
+    if (coefficient() == Coefficient::tensor)
+      {
+        std::cout << "  D = " << epsilon
+                  << " e_xi (x) e_xi + e_eta (x) e_eta"
+                  << "   [xi weight " << epsilon << ", eta weight 1, "
+                  << "anisotropy " << 1.0 / epsilon << ":1]" << std::endl;
+      }
+    else
+      {
+        std::cout << "  kappa(xi,eta) = " << epsilon
+                  << " + sin^2(xi) cos^2(eta)   [min " << epsilon << ", max "
+                  << 1.0 + epsilon << ", contrast "
+                  << (1.0 + epsilon) / epsilon << "]" << std::endl;
+      }
 
     // Build the torus once; from then on it is only refined uniformly.
     GridGenerator::torus(triangulation, TorusGeometry::R, TorusGeometry::r);
@@ -1845,6 +2198,16 @@ namespace LaplaceBeltrami
         output_results(cycle);
         stats.t_output = timer.wall_time();
 
+        // Check the exported prolongation against the transfer the V-cycle
+        // actually uses. Runs after output_results() so the .coo file it
+        // re-reads is on disk; it skips itself when nothing was dumped, and
+        // only the multigrid methods build a transfer to compare against.
+        if (uses_multigrid)
+          {
+            current_cycle = cycle;
+            verify_transfer();
+          }
+
         stats.cycle        = cycle;
         stats.dofs         = dof_handler.n_dofs();
         stats.cells        = triangulation.n_active_cells();
@@ -1895,19 +2258,37 @@ int main(int argc, char *argv[])
             write_output_files = false;
           else if (arg.rfind("--csv=", 0) == 0)
             csv_path = arg.substr(6);
+          else if (arg.rfind("--coefficient=", 0) == 0)
+            {
+              const std::string which = arg.substr(14);
+
+              if (which == "tensor")
+                coefficient() = Coefficient::tensor;
+              else if (which == "scalar")
+                coefficient() = Coefficient::scalar;
+              else
+                {
+                  std::cerr << "Unknown coefficient '" << which
+                            << "'; expected 'tensor' or 'scalar'." << std::endl;
+                  return 1;
+                }
+            }
           else if (arg.rfind("--epsilon=", 0) == 0 ||
                    arg.rfind("--kappa0=", 0) == 0)
             {
-              // Both spellings set the offset in
-              // kappa_epsilon = epsilon + sin^2(xi) cos^2(eta).
+              // Both spellings set epsilon: the offset in the scalar family
+              // kappa_epsilon = epsilon + sin^2(xi) cos^2(eta), and the weak
+              // direction weight in the tensor family
+              // D_epsilon = epsilon e_xi (x) e_xi + e_eta (x) e_eta.
               const double value = std::stod(arg.substr(arg.find('=') + 1));
 
               if (!(value > 0.0))
                 {
-                  std::cerr << "The coefficient offset must be > 0 (got "
+                  std::cerr << "The coefficient epsilon must be > 0 (got "
                             << value
-                            << "); kappa_epsilon would not be a positive "
-                               "coefficient."
+                            << "). For the scalar family a non-positive offset "
+                               "is not a positive coefficient; for the tensor "
+                               "family it is a non-positive-definite operator."
                             << std::endl;
                   return 1;
                 }
@@ -1927,17 +2308,19 @@ int main(int argc, char *argv[])
         {
           std::cerr
             << "Usage: ./solver <degree> <n_refinement_cycles> [method]\n"
-            << "                [--epsilon=E] [--no-dump] [--csv=FILE]\n"
+            << "                [--coefficient=C] [--epsilon=E]\n"
+            << "                [--no-dump] [--csv=FILE]\n"
             << "\n"
             << "  method: jacobi | ssor | mg | mg-solver | direct\n"
             << "          (default mg, i.e. CG preconditioned by multigrid)\n"
             << "\n"
-            << "  --epsilon=E  solve for kappa_epsilon(xi,eta)\n"
-            << "               = E + sin^2(xi) cos^2(eta), with contrast\n"
-            << "               (1+E)/E. Must be > 0. Default 1.1, which is\n"
-            << "               the historical coefficient. --kappa0=E is an\n"
-            << "               alias. The right-hand side, the exported\n"
-            << "               coefficient and every error norm follow E.\n"
+            << "  --coefficient=C  'tensor' (default) or 'scalar'.\n"
+            << "               tensor: D_eps = E e_xi(x)e_xi + e_eta(x)e_eta,\n"
+            << "                       anisotropy 1:E between the eta and xi\n"
+            << "                       directions; E = 1 is isotropic.\n"
+            << "               scalar: kappa_eps = E + sin^2(xi)cos^2(eta),\n"
+            << "                       contrast (1+E)/E -- the first\n"
+            << "                       experiment, kept reproducible here.\n"
             << "  --no-dump    skip the .vtk/.coo/.txt dumps, which are\n"
             << "               large and would dominate the timings\n"
             << "  --csv=FILE   append one row per cycle to FILE\n"

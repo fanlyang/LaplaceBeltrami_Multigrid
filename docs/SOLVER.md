@@ -32,24 +32,46 @@ The induced metric is diagonal with scale factors
 
 $$h_\xi = R + r\cos\eta, \qquad h_\eta = r .$$
 
-**Coefficient and exact solution.** Both are smooth functions of the angles:
+**Two coefficient families.** Which one is assembled is a run-time choice,
+`--coefficient=tensor` (the default) or `--coefficient=scalar`.
 
-$$\kappa_\varepsilon(\xi,\eta) = \varepsilon + \sin^2\xi\cos^2\eta,
-\qquad u(\xi,\eta) = \sin\xi \sin\eta .$$
+*Tensor* — a genuine direction-dependent operator, with the orthonormal tangent
+frame $e_\xi=(-\sin\xi,0,\cos\xi)$,
+$e_\eta=(-\sin\eta\cos\xi,\cos\eta,-\sin\eta\sin\xi)$:
 
-The offset $\varepsilon$ is a **run-time parameter**, set with
-`--epsilon=` (alias `--kappa0=`), and defaults to $1.1$ so that every
-pre-existing invocation keeps its original meaning. It is the knob the
-high-contrast experiment sweeps: $\kappa_{\min}=\varepsilon$,
-$\kappa_{\max}=1+\varepsilon$, so the contrast
-$(1+\varepsilon)/\varepsilon$ grows from $11\times$ at $\varepsilon=10^{-1}$ to
-$10001\times$ at $\varepsilon=10^{-4}$. It must be positive; $\varepsilon=0$
-would make $\kappa_\varepsilon$ vanish on $\{\sin\xi\cos\eta=0\}$.
+$$D_\varepsilon = \varepsilon\,e_\xi\otimes e_\xi + e_\eta\otimes e_\eta,
+\qquad u(\xi,\eta) = \sin\xi\sin\eta,$$
 
-Changing $\varepsilon$ changes $A_\varepsilon$, the right-hand side (which is
-recomputed in closed form from the same $\kappa_\varepsilon$), the coefficient
-written next to the DoFs, and every error norm — everything that should follow
-it, and nothing else.
+$$f_\varepsilon = \sin\xi\sin\eta\left(2 + \frac{\cos\eta}{h} +
+   \frac{\varepsilon}{h^2}\right), \qquad h = R + r\cos\eta .$$
+
+The strong direction is $\eta$ (weight 1), the weak direction is $\xi$ (weight
+$\varepsilon$), so the anisotropy is $1/\varepsilon$. $\varepsilon=1$ is the
+identity tensor. The tensor is applied through a single shared cell worker that
+both the active system and the multigrid levels use, so it cannot be applied in
+one assembly and forgotten in the other; the resulting operator is exactly affine
+in $\varepsilon$, $A_\varepsilon=A_\eta+\varepsilon A_\xi$, which is what
+`hcsm.selftest_tensor` checks.
+
+*Scalar* — the earlier experiment, kept so it stays reproducible:
+
+$$\kappa_\varepsilon(\xi,\eta) = \varepsilon + \sin^2\xi\cos^2\eta,$$
+
+with $\kappa_{\min}=\varepsilon$, $\kappa_{\max}=1+\varepsilon$ and contrast
+$(1+\varepsilon)/\varepsilon$.
+
+$\varepsilon$ is a **run-time parameter**, `--epsilon=` (alias `--kappa0=`); it
+must be positive — for the scalar family $\varepsilon=0$ would make
+$\kappa_\varepsilon$ vanish on $\{\sin\xi\cos\eta=0\}$, and for the tensor family
+it would make the operator singular in the xi direction. Changing it changes
+$A_\varepsilon$, the right-hand side (recomputed in closed form from the same
+coefficient), the coefficient written next to the DoFs, and every error norm —
+everything that should follow it, and nothing else.
+
+**For the tensor family the exported coefficient is a constant.** $D_\varepsilon$
+is $\varepsilon$ in the xi direction and 1 in the eta direction *at every point*,
+so there is no position-dependent scalar to sample; the exporter writes
+$\varepsilon$ itself rather than inventing a scalar proxy for a tensor.
 
 **Right-hand side.** $f = -\nabla_g\cdot(\kappa\nabla_g u) + u$ is evaluated in
 closed form. In the angle coordinates the surface divergence of a field
@@ -203,7 +225,7 @@ care of include paths, compiler flags and the libraries to link.
 
 ```bash
 ./build/solver <degree> <n_refinement_cycles> [method] \
-    [--epsilon=E] [--no-dump] [--csv=FILE]
+    [--coefficient=C] [--epsilon=E] [--no-dump] [--csv=FILE]
 ```
 
 For example
@@ -226,7 +248,10 @@ Choosing a different solver is a third argument:
 ./build/solver 3 5 direct       # UMFPACK
 ```
 
-Three options, one of which changes the problem and two the output:
+Four options: two change the problem, two the output.
+
+- `--coefficient=C` selects `tensor` (default) or `scalar`; see §1 for both.
+- `--epsilon=E` sets $\varepsilon$ for whichever family is selected.
 
 - `--epsilon=E` (alias `--kappa0=E`) solves for
   $\kappa_\varepsilon = E + \sin^2\xi\cos^2\eta$ instead of the default

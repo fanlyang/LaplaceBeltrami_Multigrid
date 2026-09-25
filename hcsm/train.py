@@ -167,6 +167,116 @@ def train_smoother(
     }
 
 
+def train_penalised(
+    model: torch.nn.Module,
+    problem: Problem,
+    tr,
+    va,
+    cfg: TrainConfig,
+    Q,
+    lam: float,
+    features_np: Optional[np.ndarray] = None,
+    out_dir: str = ".",
+    log: Callable[[str], None] = print,
+    dtype: torch.dtype = torch.float64,
+    checkpoint_name: str = "best_model.pt",
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    """Train on L = E||Q e^+||_A^2 + lambda E||e^+||_A^2.
+
+    Same optimiser, schedule, clipping and model selection as the rest of the
+    framework; the only difference from ``train_smoother`` is the objective.
+    Both terms are logged separately every log point, because the total alone
+    cannot tell "the smoother got better" from "the penalty took over".
+
+    Selection follows the validation TOTAL, which is the objective actually
+    being minimised. The test set is never consulted.
+    """
+    from .losses import penalised_loss
+
+    if features_np is None:
+        from .model import build_features
+        features_np = build_features(problem)
+    features = torch.from_numpy(np.asarray(features_np, dtype=np.float64)).to(dtype)
+
+    # The tensors are built once, outside the loop: rebuilding them per epoch
+    # would put a numpy->torch copy of the whole training set inside the hot
+    # path and dominate the run.
+    Etr = torch.from_numpy(np.asarray(tr.E, dtype=np.float64)).to(dtype)
+    Eva = torch.from_numpy(np.asarray(va.E, dtype=np.float64)).to(dtype)
+    Rtr = torch.from_numpy(np.asarray(tr.R, dtype=np.float64)).to(dtype)
+    Rva = torch.from_numpy(np.asarray(va.R, dtype=np.float64)).to(dtype)
+
+    den = np.asarray(tr.E, dtype=np.float64)
+    worst = float(np.max(np.abs(np.einsum("bi,bi->b", den,
+                                          (problem.A @ den.T).T) - 1.0)))
+    if worst > 1e-10:
+        raise SystemExit("training targets are not unit A-energy (worst %.3e); "
+                         "the two loss terms would not be comparable" % worst)
+
+    n_tr = Etr.shape[0]
+    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
+                           weight_decay=cfg.weight_decay)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, factor=0.5, patience=max(50, cfg.early_stop // 4))
+    g = torch.Generator().manual_seed(cfg.seed)
+
+    history: List[Dict[str, object]] = []
+    best, best_epoch, bad = float("inf"), -1, 0
+    n_val = min(cfg.val_batch, Eva.shape[0])
+    t0 = time.time()
+
+    for epoch in range(cfg.epochs + 1):
+        model.train()
+        idx = torch.randperm(n_tr, generator=g)[: cfg.batch_size]
+        corr = model(Rtr[idx], features, None)
+        loss, comp, full = penalised_loss(corr, Etr[idx], Q, lam)
+
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        if cfg.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        opt.step()
+
+        if epoch % cfg.log_every == 0 or epoch == cfg.epochs:
+            model.eval()
+            with torch.no_grad():
+                vc = model(Rva[:n_val], features, None)
+                v_loss, v_comp, v_full = penalised_loss(vc, Eva[:n_val], Q, lam)
+            sched.step(float(v_loss))
+            row = {"epoch": epoch, "train_total": float(loss.item()),
+                   "train_complement": float(comp.item()),
+                   "train_full": float(full.item()),
+                   "val_total": float(v_loss.item()),
+                   "val_complement": float(v_comp.item()),
+                   "val_full": float(v_full.item()),
+                   "lr": float(opt.param_groups[0]["lr"]),
+                   "seconds": time.time() - t0}
+            history.append(row)
+            log("      epoch %6d  train %.6f (Q %.6f + %.3g*full %.6f)  "
+                "val %.6f (Q %.6f)" % (epoch, row["train_total"],
+                                       row["train_complement"], lam,
+                                       row["train_full"], row["val_total"],
+                                       row["val_complement"]))
+            if float(v_loss) < best - cfg.min_delta:
+                best, best_epoch, bad = float(v_loss), epoch, 0
+                torch.save({"state_dict": model.state_dict(),
+                            "config": asdict(cfg), "epsilon": problem.eps,
+                            "lambda": lam, "epoch": epoch,
+                            "val_total": float(v_loss)},
+                           os.path.join(out_dir, checkpoint_name))
+            else:
+                bad += 1
+                if bad >= cfg.early_stop:
+                    log("      early stop at epoch %d (best %d, val %.6f)"
+                        % (epoch, best_epoch, best))
+                    break
+
+    return history, {"best_epoch": best_epoch, "best_val_loss": best,
+                     "lambda": lam, "epochs_run": history[-1]["epoch"],
+                     "seconds": time.time() - t0,
+                     "checkpoint": os.path.join(out_dir, checkpoint_name)}
+
+
 def write_history(history: List[Dict[str, object]], path: str) -> None:
     if not history:
         return
