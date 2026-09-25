@@ -52,6 +52,11 @@ def read_vector(path):
     # First line: count; then one value per line.
     with open(path) as f:
         count = int(f.readline())
+    if count == 0:
+        # An empty vector is the normal case for the refinement-edge set on a
+        # uniformly refined mesh, and the exporter writes the count line only.
+        # np.loadtxt would emit a "no data" warning on that file.
+        return np.zeros(0, dtype=np.float64)
     data = np.loadtxt(path, skiprows=1)
     data = np.atleast_1d(data)
     assert data.shape[0] == count, (path, data.shape, count)
@@ -83,6 +88,12 @@ def main():
     ap.add_argument("--cycle", type=int, default=None,
                     help="refinement cycle (default: highest found)")
     ap.add_argument("--out-dir", default="level_data")
+    ap.add_argument("--also-coarse", action="store_true",
+                    help="also write coarse_matrix.npz, the INDEPENDENTLY "
+                         "ASSEMBLED operator of level-1. The high-contrast "
+                         "experiment uses the Galerkin operator P^T A P "
+                         "instead; this file is written only so the two can be "
+                         "compared and the choice documented with a number.")
     args = ap.parse_args()
 
     level = args.level
@@ -134,6 +145,19 @@ def main():
               % (P.shape[0], P.shape[1], args.out_dir))
     else:
         print("  no P-%s.coo; train with the energy loss alone" % tag)
+
+    if args.also_coarse and level > 0:
+        coarse_tag = "level-%d-cycle-%d" % (level - 1, cycle)
+        coarse_path = os.path.join(d, "A-%s.coo" % coarse_tag)
+        if os.path.exists(coarse_path):
+            A_c = read_coo(coarse_path)
+            sp.save_npz(os.path.join(args.out_dir, "coarse_matrix.npz"), A_c)
+            print("  wrote coarse_matrix.npz (assembled level %d, %d x %d) "
+                  "-- NOT used by the experiment, kept for comparison"
+                  % (level - 1, A_c.shape[0], A_c.shape[1]))
+        else:
+            print("  no A-%s.coo; skipping the assembled-coarse comparison"
+                  % coarse_tag)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,15 @@
 # DeepONet as a multigrid smoother — training and evaluation
 
+> **On this branch.** This document describes `deeponet_smoother.py`, which is
+> kept and **imported** by the high-contrast experiment in `hcsm/` — its
+> `Branch`, `Trunk`, `DeepONetSmoother`, `ClassicalSmoothers`, `load_level` and
+> energy-loss kernel are the architecture and framework that experiment reuses.
+> The `level_data/L*` paths and commands below are from the *previous* line of
+> work on this file; the high-contrast experiment stores its own per-epsilon
+> data in `level_data/eps-<E>-L3/` and does not use the CGC objective described
+> here. See `README.md` for that experiment and for the exact list of imported
+> symbols.
+
 `deeponet_smoother.py` learns the residual-to-correction map
 
 ```

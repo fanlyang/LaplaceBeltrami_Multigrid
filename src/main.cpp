@@ -93,8 +93,14 @@ namespace LaplaceBeltrami
    *
    * The coefficient and the exact solution are
    *
-   *     kappa(xi, eta) = 1.1 + sin^2(xi) cos^2(eta)
-   *     u(xi, eta)     = sin(xi) sin(eta).
+   *     kappa_epsilon(xi, eta) = epsilon + sin^2(xi) cos^2(eta)
+   *     u(xi, eta)             = sin(xi) sin(eta),
+   *
+   * with the offset epsilon a run-time parameter (see kappa_offset()
+   * below). The manufactured solution does not depend on epsilon, but the
+   * right-hand side does: it is evaluated in closed form from the same
+   * kappa_epsilon, so f is consistent with the operator that is assembled
+   * for every epsilon -- it is never reused from another coefficient.
    *
    * ================================================================== */
 
@@ -104,8 +110,26 @@ namespace LaplaceBeltrami
     constexpr double R = 2.0;
     constexpr double r = 1.0;
 
-    // Offset in kappa(xi, eta) = kappa_0 + sin^2(xi) cos^2(eta).
-    constexpr double kappa_0 = 1.1;
+    // Offset epsilon in kappa_epsilon(xi, eta) = epsilon + sin^2(xi) cos^2(eta).
+    //
+    // This used to be the compile-time constant 1.1. It is now a run-time
+    // parameter (command line: --epsilon= / --kappa0=) because the
+    // high-contrast study sweeps it: on the torus
+    //
+    //     kappa_min = epsilon,   kappa_max = 1 + epsilon,
+    //
+    // so the contrast kappa_max/kappa_min = (1+epsilon)/epsilon grows
+    // without bound as epsilon -> 0, and epsilon = 0 would be a degenerate
+    // (vanishing) coefficient. The default 1.1 keeps every pre-existing
+    // invocation meaning exactly what it meant before.
+    //
+    // It is written once, before any assembly, and only read afterwards, so
+    // the assembly threads (WorkStream) see a constant.
+    inline double &kappa_offset()
+    {
+      static double epsilon = 1.1;
+      return epsilon;
+    }
 
 
     // The two angle coordinates of a point on the torus. Note that they
@@ -139,13 +163,17 @@ namespace LaplaceBeltrami
     }
 
 
-    // kappa(xi, eta) = kappa_0 + sin^2(xi) cos^2(eta)
+    // kappa_epsilon(xi, eta) = epsilon + sin^2(xi) cos^2(eta)
+    //
+    // The second term vanishes on {sin(xi) = 0} U {cos(eta) = 0} and equals
+    // one on {|sin(xi) cos(eta)| = 1}, so the coefficient really does attain
+    // both kappa_min = epsilon and kappa_max = 1 + epsilon on the torus.
     inline double kappa(const double xi, const double eta)
     {
       const double sin_xi  = std::sin(xi);
       const double cos_eta = std::cos(eta);
 
-      return kappa_0 + sin_xi * sin_xi * cos_eta * cos_eta;
+      return kappa_offset() + sin_xi * sin_xi * cos_eta * cos_eta;
     }
   } // namespace TorusGeometry
 
@@ -276,6 +304,12 @@ namespace LaplaceBeltrami
     const double dh_deta = -TorusGeometry::r * sin_eta;
 
     // kappa and its angle derivatives.
+    //
+    // Only kappa itself carries the offset epsilon; the two derivatives below
+    // do not, because d(epsilon)/dxi = d(epsilon)/deta = 0. The exact
+    // divergence therefore picks up an epsilon-dependent part through kappa
+    // alone, and f genuinely changes when epsilon changes -- the right-hand
+    // side is recomputed from this same function every time.
     const double kappa = TorusGeometry::kappa(angles.xi, angles.eta);
 
     const double kappa_xi = 2.0 * sin_xi * cos_xi * cos_eta * cos_eta;
@@ -1703,15 +1737,19 @@ namespace LaplaceBeltrami
       AssertThrow(out, ExcMessage("Could not open " + path));
 
       if (fresh)
-        out << "method,degree,cycle,dofs,cells,levels,converged,iterations,"
+        out << "method,degree,epsilon,cycle,dofs,cells,levels,converged,"
+               "iterations,"
                "rate,residual,t_setup,t_assemble,t_pc_setup,t_solve,t_total,"
                "algebraic_mb,rss_growth_mb,peak_rss_mb,"
                "h1_error,l2_error,linf_error\n";
 
       out << std::setprecision(10);
 
+      const double epsilon = TorusGeometry::kappa_offset();
+
       for (const SolveStats &s : rows)
-        out << s.method << ',' << degree << ',' << s.cycle << ',' << s.dofs
+        out << s.method << ',' << degree << ',' << epsilon << ',' << s.cycle
+            << ',' << s.dofs
             << ',' << s.cells << ',' << s.levels << ','
             << (s.converged ? "yes" : "no") << ',' << s.iterations << ','
             << s.rate << ',' << s.residual << ',' << s.t_setup << ','
@@ -1732,6 +1770,14 @@ namespace LaplaceBeltrami
   template <int dim, int spacedim>
   void LaplaceBeltramiProblem<dim, spacedim>::run()
   {
+    // Say which coefficient is being solved for, so that a log is
+    // self-describing: the same binary produces four different problems.
+    const double epsilon = TorusGeometry::kappa_offset();
+    std::cout << "Coefficient: kappa(xi,eta) = " << epsilon
+              << " + sin^2(xi) cos^2(eta)   [min " << epsilon << ", max "
+              << 1.0 + epsilon << ", contrast " << (1.0 + epsilon) / epsilon
+              << "]" << std::endl;
+
     // Build the torus once; from then on it is only refined uniformly.
     GridGenerator::torus(triangulation, TorusGeometry::R, TorusGeometry::r);
 
@@ -1849,6 +1895,25 @@ int main(int argc, char *argv[])
             write_output_files = false;
           else if (arg.rfind("--csv=", 0) == 0)
             csv_path = arg.substr(6);
+          else if (arg.rfind("--epsilon=", 0) == 0 ||
+                   arg.rfind("--kappa0=", 0) == 0)
+            {
+              // Both spellings set the offset in
+              // kappa_epsilon = epsilon + sin^2(xi) cos^2(eta).
+              const double value = std::stod(arg.substr(arg.find('=') + 1));
+
+              if (!(value > 0.0))
+                {
+                  std::cerr << "The coefficient offset must be > 0 (got "
+                            << value
+                            << "); kappa_epsilon would not be a positive "
+                               "coefficient."
+                            << std::endl;
+                  return 1;
+                }
+
+              TorusGeometry::kappa_offset() = value;
+            }
           else if (!arg.empty() && arg[0] == '-')
             {
               std::cerr << "Unknown option '" << arg << "'" << std::endl;
@@ -1862,11 +1927,17 @@ int main(int argc, char *argv[])
         {
           std::cerr
             << "Usage: ./solver <degree> <n_refinement_cycles> [method]\n"
-            << "                [--no-dump] [--csv=FILE]\n"
+            << "                [--epsilon=E] [--no-dump] [--csv=FILE]\n"
             << "\n"
             << "  method: jacobi | ssor | mg | mg-solver | direct\n"
             << "          (default mg, i.e. CG preconditioned by multigrid)\n"
             << "\n"
+            << "  --epsilon=E  solve for kappa_epsilon(xi,eta)\n"
+            << "               = E + sin^2(xi) cos^2(eta), with contrast\n"
+            << "               (1+E)/E. Must be > 0. Default 1.1, which is\n"
+            << "               the historical coefficient. --kappa0=E is an\n"
+            << "               alias. The right-hand side, the exported\n"
+            << "               coefficient and every error norm follow E.\n"
             << "  --no-dump    skip the .vtk/.coo/.txt dumps, which are\n"
             << "               large and would dominate the timings\n"
             << "  --csv=FILE   append one row per cycle to FILE\n"
