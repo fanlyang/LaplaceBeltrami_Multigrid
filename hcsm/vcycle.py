@@ -17,16 +17,9 @@ argument, so the coarse level receives the RESTRICTED RESIDUAL. Written in
 an error, which silently omits the coarse solve; the cycle then diverges and the
 result looks like a smoother failure rather than a coding error.
 
-**A flexible outer solver.** A learned smoother is in general NONLINEAR in the
-residual -- the scale-equivariant wrapper is homogeneous but the tanh branch is
-not linear -- and a V-cycle built from a nonlinear smoother is a nonlinear
-preconditioner. Ordinary PCG assumes a fixed linear operator and its convergence
-theory does not apply; the stationary iteration can still be run, and where an
-accelerated method is wanted the correct one is flexible CG (Notay's FCG), which
-recomputes the preconditioned direction every iteration and remains valid for a
-varying preconditioner. Both are provided; the learned smoother is reported with
-FCG, the classical smoothers with ordinary PCG and with the stationary iteration,
-so the comparison never rests on an assumption the learned smoother breaks.
+**Outer solvers.** Nonlinear learned cycles and nonsymmetric forward-GS
+cycles use PyAMG FGMRES with stored preconditioned directions. PCG is reserved
+for symmetric classical configurations. Every solve reports the true residual.
 """
 
 from __future__ import annotations
@@ -234,12 +227,10 @@ def solve_with_preconditioner(
     maxiter: int = 500,
     flexible: bool = True,
 ) -> Dict[str, object]:
-    """Outer solve: FCG when the preconditioner may be nonlinear, PCG otherwise.
+    """FGMRES for nonlinear or nonsymmetric cycles; PCG for symmetric baselines.
 
-    FCG (Notay) accepts a preconditioner that changes from iteration to
-    iteration, which a learned V-cycle does. It reduces to ordinary PCG when the
-    preconditioner is fixed, so it is a safe default; ``flexible=False`` runs
-    ordinary PCG, which is only valid for the classical smoothers.
+    Always check the true residual. The forward-GS cycle is nonsymmetric even
+    though A is SPD, so it must not enter the PCG path.
     """
     A = hierarchy.A[level]
     n = A.shape[0]
@@ -248,7 +239,8 @@ def solve_with_preconditioner(
     def M(v):
         return vcycle(hierarchy, smoother, level, np.asarray(v).ravel())
 
-    Mop = spla.aslinearoperator(spla.LinearOperator((n, n), matvec=M))
+    Mop = spla.LinearOperator((n, n), matvec=M, dtype=A.dtype)
+    flexible = flexible or getattr(smoother, "kind", None) == "gs"
 
     iters: List[int] = []
     t0 = time.perf_counter()
@@ -257,33 +249,9 @@ def solve_with_preconditioner(
         iters.append(1)
 
     if flexible:
-        # Flexible CG: the search direction is rebuilt from the current
-        # preconditioned residual every iteration, so a varying M stays valid.
-        x = np.zeros(n)
-        r = b.copy()
-        z = M(r)
-        p = z.copy()
-        rz = float(r @ z)
-        b_norm = np.linalg.norm(b)
-        for _ in range(maxiter):
-            if np.linalg.norm(r) / b_norm <= tol:
-                break
-            Ap = A @ p
-            denom = float(p @ Ap)
-            if denom == 0.0:
-                break
-            alpha = rz / denom
-            x = x + alpha * p
-            r = r - alpha * Ap
-            z = M(r)
-            rz_new = float(r @ z)
-            if rz == 0.0:
-                break
-            beta = rz_new / rz
-            rz = rz_new
-            p = z + beta * p
-            iters.append(1)
-        converged = np.linalg.norm(r) / b_norm <= tol
+        from pyamg.krylov import fgmres
+        x, info = fgmres(Aop, b, M=Mop, tol=tol, maxiter=maxiter,
+                         restart=None, callback=callback)
     else:
         try:
             x, info = spla.cg(Aop, b, rtol=tol, maxiter=maxiter, M=Mop,
@@ -293,13 +261,18 @@ def solve_with_preconditioner(
             x, info = spla.cg(Aop, b, tol=tol, maxiter=maxiter, M=Mop,
                               callback=callback)
             converged = info == 0
-        r = b - A @ x
+
+    r = b - A @ x
+    relative_residual = float(np.linalg.norm(r) / max(np.linalg.norm(b), 1e-300))
+    converged = info == 0 and relative_residual <= tol
 
     seconds = time.perf_counter() - t0
     return {
         "iterations": len(iters),
         "converged": bool(converged),
-        "residual": float(np.linalg.norm(r) / np.linalg.norm(b)),
+        "residual": relative_residual,
         "seconds": seconds,
         "flexible": bool(flexible),
+        "solver": "fgmres" if flexible else "pcg",
+        "info": int(info),
     }

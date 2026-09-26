@@ -1,0 +1,57 @@
+Could not save font_manager cache [Errno 13] Permission denied: 'C:\\Users\\m1595\\.matplotlib\\fontlist-v3.11.0.json.matplotlib-lock'
+<repository>\deeponet_smoother.py:316: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\Context.cpp:855.)
+  return torch.sparse_coo_tensor(idx, val, size=M.shape, dtype=dtype).coalesce()
+==============================================================================
+tensor self-test: the operator, the projector and the transfer
+==============================================================================
+
+epsilon = 1          anisotropy 1:1
+  [PASS] manufactured solution converges at O(h)/O(h^2)           H1 rate 1.001, L2 rate 1.999 (finest L2 1.676e-03)
+  [PASS] A_epsilon is assembly-consistent at this epsilon         nnz 9216, diag ratio 1.658, cond(A_H) 41.7
+  [PASS] A_epsilon is symmetric positive definite                 symmetric to 6.7e-16, lambda_min 0.06697
+  [PASS] Q_epsilon: torch loss path == scipy solve path           max |difference| 2.887e-15 (scale 4.224e+00)
+  [PASS] P^T A (Q v) = 0 through the torch path                   max relative 6.967e-16
+
+epsilon = 0.1        anisotropy 10:1
+  [PASS] manufactured solution converges at O(h)/O(h^2)           H1 rate 1.001, L2 rate 1.999 (finest L2 1.652e-03)
+  [PASS] A_epsilon is assembly-consistent at this epsilon         nnz 9216, diag ratio 2.722, cond(A_H) 41.7
+  [PASS] A_epsilon is symmetric positive definite                 symmetric to 4.4e-16, lambda_min 0.06695
+  [PASS] Q_epsilon: torch loss path == scipy solve path           max |difference| 5.551e-15 (scale 4.405e+00)
+  [PASS] P^T A (Q v) = 0 through the torch path                   max relative 5.193e-16
+
+epsilon = 0.01       anisotropy 100:1
+  [PASS] manufactured solution converges at O(h)/O(h^2)           H1 rate 1.001, L2 rate 1.999 (finest L2 1.649e-03)
+  [PASS] A_epsilon is assembly-consistent at this epsilon         nnz 9216, diag ratio 2.930, cond(A_H) 94.7
+  [PASS] A_epsilon is symmetric positive definite                 symmetric to 4.4e-16, lambda_min 0.04852
+  [PASS] Q_epsilon: torch loss path == scipy solve path           max |difference| 8.660e-15 (scale 4.417e+00)
+  [PASS] P^T A (Q v) = 0 through the torch path                   max relative 6.984e-16
+
+epsilon = 0.001      anisotropy 1000:1
+  [PASS] manufactured solution converges at O(h)/O(h^2)           H1 rate 1.001, L2 rate 1.999 (finest L2 1.649e-03)
+  [PASS] A_epsilon is assembly-consistent at this epsilon         nnz 9216, diag ratio 2.953, cond(A_H) 121.2
+  [PASS] A_epsilon is symmetric positive definite                 symmetric to 4.4e-16, lambda_min 0.02524
+  [PASS] Q_epsilon: torch loss path == scipy solve path           max |difference| 5.773e-15 (scale 4.414e+00)
+  [PASS] P^T A (Q v) = 0 through the torch path                   max relative 9.175e-16
+
+epsilon = 0.0001     anisotropy 10000:1
+  [PASS] manufactured solution converges at O(h)/O(h^2)           H1 rate 1.001, L2 rate 1.999 (finest L2 1.649e-03)
+  [PASS] A_epsilon is assembly-consistent at this epsilon         nnz 9216, diag ratio 2.956, cond(A_H) 124.7
+  [PASS] A_epsilon is symmetric positive definite                 symmetric to 4.4e-16, lambda_min 0.02263
+  [PASS] Q_epsilon: torch loss path == scipy solve path           max |difference| 6.883e-15 (scale 4.414e+00)
+  [PASS] P^T A (Q v) = 0 through the torch path                   max relative 6.991e-16
+
+operator structure
+  [PASS] A_eps is affine in eps: A_eta + eps A_xi                 max |A(1e-1) - interpolant| = 1.776e-15 (relative 4.37e-16)
+  [PASS] epsilon changes the assembled operator                   max relative |A(1) - A(1e-4)| = 0.3268
+  [PASS] the eps-dependent (xi) part is a real part of the operator max |A_xi| = 1.3291 vs max |A_eta| ~ 4.0232
+
+exported transfer
+  [PASS] exported P == MGTransferPrebuilt, and P^T == its restriction eps 1      worst |P_mg - P| 0.00e+00, worst |R_mg - P^T| 0.00e+00
+  [PASS] exported P == MGTransferPrebuilt, and P^T == its restriction eps 0.1    worst |P_mg - P| 0.00e+00, worst |R_mg - P^T| 0.00e+00
+  [PASS] exported P == MGTransferPrebuilt, and P^T == its restriction eps 0.01   worst |P_mg - P| 0.00e+00, worst |R_mg - P^T| 0.00e+00
+  [PASS] exported P == MGTransferPrebuilt, and P^T == its restriction eps 0.001  worst |P_mg - P| 0.00e+00, worst |R_mg - P^T| 0.00e+00
+  [PASS] exported P == MGTransferPrebuilt, and P^T == its restriction eps 0.0001 worst |P_mg - P| 0.00e+00, worst |R_mg - P^T| 0.00e+00
+
+==============================================================================
+33 checks, 0 failed
+==============================================================================

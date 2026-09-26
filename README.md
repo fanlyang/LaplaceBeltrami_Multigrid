@@ -1,5 +1,14 @@
 # Anisotropic tensor diffusion on a torus
 
+> **Corrected pilot (2026-09-26):** The historical results below predate fixes
+> to checkpoint restoration, validation coverage, training control, and the
+> mislabeled flexible-CG implementation. See the [corrected pilot](docs/CORRECTED_PILOT.md)
+> and its [numerical report](results/corrected-pilot/REPORT.md). With the same
+> architecture/data/update budget, DeepONet remains behind symmetric GS;
+> corrected common FGMRES takes 115 iterations for the baseline checkpoint,
+> 114 for the corrected checkpoint, and 44 for symmetric GS. Historical
+> outer-solver labels and conclusions should not be treated as corrected results.
+
 **Which coarse-space-complement error components defeat classical point smoothers
 as the operator becomes anisotropic, and what a learned smoother does about
 them?**

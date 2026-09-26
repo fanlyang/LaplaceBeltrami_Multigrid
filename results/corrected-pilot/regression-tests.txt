@@ -1,0 +1,17 @@
+Could not save font_manager cache [Errno 13] Permission denied: '<user>\\.matplotlib\\fontlist-v3.11.0.json.matplotlib-lock'
+test_exact_optimizer_update_budget (hcsm.test_corrected_pilot.CorrectedPilotTests.test_exact_optimizer_update_budget) ... <repository>\deeponet_smoother.py:316: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\aten\src\ATen\Context.cpp:855.)
+  return torch.sparse_coo_tensor(idx, val, size=M.shape, dtype=dtype).coalesce()
+ok
+test_fgmres_handles_nonlinear_preconditioner_and_true_residual (hcsm.test_corrected_pilot.CorrectedPilotTests.test_fgmres_handles_nonlinear_preconditioner_and_true_residual) ... ok
+test_forward_gs_cannot_enter_pcg (hcsm.test_corrected_pilot.CorrectedPilotTests.test_forward_gs_cannot_enter_pcg) ... ok
+test_measured_corrections_unchanged_by_timing (hcsm.test_corrected_pilot.CorrectedPilotTests.test_measured_corrections_unchanged_by_timing) ... ok
+test_patience_units_and_best_checkpoint_restoration (hcsm.test_corrected_pilot.CorrectedPilotTests.test_patience_units_and_best_checkpoint_restoration) ... ok
+test_projected_bound_and_invalid_inputs (hcsm.test_corrected_pilot.CorrectedPilotTests.test_projected_bound_and_invalid_inputs) ... ok
+test_residual_interface_and_scaling (hcsm.test_corrected_pilot.CorrectedPilotTests.test_residual_interface_and_scaling) ... ok
+test_scalar_trainer_checkpoint_uses_safe_serializable_metadata (hcsm.test_corrected_pilot.CorrectedPilotTests.test_scalar_trainer_checkpoint_uses_safe_serializable_metadata) ... ok
+test_validation_includes_all_family_blocks_and_partial_batch (hcsm.test_corrected_pilot.CorrectedPilotTests.test_validation_includes_all_family_blocks_and_partial_batch) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 4.142s
+
+OK

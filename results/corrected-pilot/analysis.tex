@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{amsmath,booktabs}
+\usepackage[margin=1in]{geometry}
+\begin{document}
+\section*{Corrected anisotropic DeepONet pilot}
+We compare the original and corrected training pipelines at $\varepsilon=10^{-4}$ on a fixed 1024-DoF torus hierarchy. Both use the same architecture, seed, 96 training errors, 96 validation errors, and 3001 optimizer updates. Each penalty probe uses 601 updates; both select $\lambda=1$. No model-capacity or dataset-size change is included.
+\paragraph{Complement reduction.} Entries are mean norm ratios $\|Q(e-B_\theta(Ae))\|_A/\|e\|_A$, on identical held-out samples.
+\begin{center}\begin{tabular}{lrrr}\toprule
+Family & Baseline DeepONet & Corrected DeepONet & Symmetric GS \\ \midrule
+weak & 0.951411 & 0.951502 & 0.849540 \\
+gaussian & 0.392723 & 0.392480 & 0.231061 \\
+fourier & 0.428012 & 0.426631 & 0.221992 \\
+survivor & 0.680234 & 0.682120 & 0.541244 \\
+stress & 0.638207 & 0.638332 & 0.588638 \\
+\bottomrule\end{tabular}\end{center}
+\paragraph{Actual cycle.} Stationary residual rates are 0.978405 for the baseline, 0.978322 for the corrected model, and 0.922221 for symmetric GS. Under the same FGMRES outer solver and right-hand side, iteration counts are 115, 114, and 44, respectively, at tolerance $10^{-10}$.
+\paragraph{Interpretation.} The changes are small and mixed. The corrected pipeline does not establish improved learning or superiority over symmetric GS. Its best checkpoint is at update 2800. The learning rate remains $10^{-3}$ in both runs. Dataset enlargement and architecture changes require separate experiments.
+\paragraph{Scope.} Nine focused regression tests and all 33 existing tensor checks pass. Existing FEM matrices and stored transfer/convergence reports are reused; no new C++ assembly was run. Results concern one seed and mesh. Stationary rates use a finite 30-cycle window; they are not certified asymptotic factors.
+\end{document}
