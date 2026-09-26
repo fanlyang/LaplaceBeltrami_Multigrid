@@ -260,8 +260,9 @@ This is a different question from every table above. Here the V-cycle is run on
 the exported hierarchy from random right-hand sides, as a stationary defect
 correction with no Krylov acceleration, and the contraction rate is measured
 from the last cycles. The learned smoother is nonlinear, so where an accelerated
-outer solver is wanted the compatible one is flexible CG; ordinary PCG is used
-for the classical smoothers.
+outer solver is wanted this corrected runner uses FGMRES for learned and forward-GS cycles,
+and PCG for symmetric classical configurations. Historical results retain
+their original solver labels and must not be interpreted as verified FGMRES.
 """)
     vc_rows = []
     for t in tags:
@@ -269,11 +270,11 @@ for the classical smoothers.
         c = m["vcycle"]["classical"]
         l = m["vcycle"]["learned"]
         vc_rows.append((eps_label(t),
-                        c["sgs"]["mean_rate"], c["jacobi"]["mean_rate"],
+                        c["jacobi"]["mean_rate"], c["sgs"]["mean_rate"],
                         l["mean_rate"],
-                        c["sgs"]["mean_iterations"],
                         m["outer_solver"]["classical"]["sgs"]["iterations"],
-                        m["outer_solver"]["learned"]["iterations"]))
+                        m["outer_solver"]["learned"]["iterations"],
+                        m["outer_solver"]["classical"]["jacobi"]["iterations"]))
     parts.append(r"""\begin{table}[htbp]\centering
 \caption{V-cycle contraction rates and outer-solve iteration counts on the
 1024-DoF level. A rate near $1$ means the cycle barely contracts.}
@@ -282,7 +283,7 @@ for the classical smoothers.
 \toprule
 $\varepsilon$ & \multicolumn{3}{c}{stationary rate} & \multicolumn{3}{c}{outer iterations} \\
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
- & Jacobi & SGS & learned & SGS (PCG) & learned (FCG) & Jacobi \\
+ & Jacobi & SGS & learned & SGS (PCG) & learned (see solver metadata) & Jacobi \\
 \midrule
 """ + "\n".join(
         r"%s & %.4f & %.4f & %.4f & %d & %d & %d \\" % r for r in vc_rows)
@@ -303,8 +304,8 @@ oscillatory along the weak-coupling direction, exactly the regime the standard
 anisotropic analysis predicts. The softest evidence is the quantity
 $\eta(e)=\lVert D^{-1}Ae\rVert_A/\lVert e\rVert_A$, which enters the bound
 $\lVert S_Je\rVert_A\ge(1-\omega\eta(e))\lVert e\rVert_A$; where
-$\omega\eta(e)\ge1$ the bound guarantees nothing and damped Jacobi indeed
-reduces nothing.
+$\omega\eta(e)\ge1$ the lower bound is uninformative; it does not establish
+that Jacobi fails. For $Qe=e$, the projected version of this bound also holds.
 
 \textbf{Not established.} That the learned smoother is better than the classical
 methods overall, or that it rescues the multigrid. The per-family and

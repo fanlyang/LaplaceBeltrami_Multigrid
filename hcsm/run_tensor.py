@@ -29,6 +29,7 @@ method does to a real solve.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import csv
 import json
 import os
@@ -109,7 +110,7 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
             n_families: int = 96, epochs: int = 3000, p_dim: int = 64,
             width: int = 128, depth: int = 3,
             lambda_candidates: Sequence[float] = (0.0, 0.01, 0.1, 1.0),
-            lambda_epochs: int = 600, n_stress: int = 24,
+            lambda_epochs: int = 600,
             vcycle_rhs: int = 4, verbose: bool = True) -> Dict[str, object]:
     t_start = time.time()
     os.makedirs(out_dir, exist_ok=True)
@@ -196,7 +197,7 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
         outer[kind] = solve_with_preconditioner(hierarchy, sm, level, b,
                                                 flexible=False)
         log("      V-cycle [%-7s] stationary rate %.4f (worst %.4f), "
-            "%.1f iterations, %.2f s/rhs | PCG %d iters"
+            "%.1f iterations, %.2f s/rhs | outer %d iters"
             % (kind, vcycles[kind]["mean_rate"], vcycles[kind]["worst_rate"],
                vcycles[kind]["mean_iterations"],
                vcycles[kind]["seconds_per_rhs"], outer[kind]["iterations"]))
@@ -227,7 +228,7 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
                 best, lam = float(score), float(cand)
         log("    selected lambda = %g" % lam)
 
-    log("  training the DeepONet on the penalised loss (lambda = %g, %d epochs)"
+    log("  training the DeepONet on the penalised loss (lambda = %g, %d updates)"
         % (lam, epochs))
     model = build_model(problem, features_np.shape[1], p=p_dim, width=width,
                         depth=depth, base_smoother="jacobi", seed=seed)
@@ -278,7 +279,7 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
     out_learned = solve_with_preconditioner(hierarchy, sm_learned, level, b,
                                             flexible=True)
     log("      V-cycle [learned] stationary rate %.4f (worst %.4f), %.1f "
-        "iterations, %.2f s/rhs | FCG %d iters (converged %s)"
+        "iterations, %.2f s/rhs | FGMRES %d iters (converged %s)"
         % (vc_learned["mean_rate"], vc_learned["worst_rate"],
            vc_learned["mean_iterations"], vc_learned["seconds_per_rhs"],
            out_learned["iterations"], out_learned["converged"]))
@@ -289,7 +290,7 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
     def pack(block):
         return {fam: {meth: {"full": d["full"].as_dict(),
                              "complement": d["complement"].as_dict(),
-                             "n": d["n"]}
+                             "n": d["n"], "seconds": d["seconds"]}
                       for meth, d in meths.items()}
                 for fam, meths in block.items()}
 
@@ -299,6 +300,9 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
         "problem": problem.diagnostics,
         "condition": cond,
         "family_plan": plan,
+        "sample_sha256": {
+            role: hashlib.sha256(np.ascontiguousarray(mix.E).tobytes()).hexdigest()
+            for role, mix in (("train", train_mix), ("val", val_mix), ("test", test_mix))},
         "family_audit": audit,
         "stress_labels": stress["label"],
         "bound_check": bound,
@@ -309,6 +313,8 @@ def run_one(eps: float, root: str, out_dir: str, seed: int = 0, level: int = 3,
         "deeponet_families": pack(dn_families),
         "deeponet_stress": pack(dn_stress),
         "training": {**info, "lambda": lam, "lambda_table": lam_table,
+                     "architecture": arch, "trunk_features": "trig",
+                     "config": vars(cfg),
                      "parameters": parameter_count(model),
                      "scale_equivariance_error": scale_err},
         "vcycle": {"classical": vcycles, "learned": vc_learned,
@@ -404,18 +410,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--level", type=int, default=3)
-    ap.add_argument("--families", type=int, default=96,
-                    help="samples per family per role")
-    ap.add_argument("--epochs", type=int, default=3000)
-    ap.add_argument("--lambda-epochs", type=int, default=600)
+    ap.add_argument("--samples-per-family", type=int, default=24,
+                    help="samples in EACH of the four families, for each role")
+    ap.add_argument("--families", type=int, default=None,
+                    help="deprecated: TOTAL samples per role, divisible by four")
+    ap.add_argument("--max-steps", "--epochs", dest="epochs", type=int, default=3000,
+                    help="exact maximum number of optimizer updates")
+    ap.add_argument("--lambda-steps", "--lambda-epochs", dest="lambda_epochs",
+                    type=int, default=600, help="optimizer updates per lambda probe")
     ap.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1))
-    ap.add_argument("--classical-only", action="store_true")
     args = ap.parse_args(argv)
+    total = args.families if args.families is not None else 4 * args.samples_per_family
+    if total < 4 or total % 4:
+        ap.error("total sample count must be positive and divisible by four")
+    if args.epochs < 1 or args.lambda_epochs < 1:
+        ap.error("training step counts must be positive")
 
     torch.set_num_threads(args.threads)
     out = args.out or os.path.join("results", "tensor", "eps-%s" % eps_tag(args.eps))
     run_one(eps=args.eps, root=args.data_root, out_dir=out, seed=args.seed,
-            level=args.level, n_families=args.families, epochs=args.epochs,
+            level=args.level, n_families=total, epochs=args.epochs,
             lambda_epochs=args.lambda_epochs)
     return 0
 

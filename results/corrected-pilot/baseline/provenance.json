@@ -1,0 +1,7 @@
+{
+  "source_commit": "be2eaee8446f04c027f6374b0bba36408b1d5179",
+  "command": "python -m hcsm.run_tensor --eps 1e-4 --families 96 --epochs 3000 --lambda-epochs 600 --seed 0 --threads 4 --out ../pilot-baseline",
+  "actual_optimizer_updates": 3001,
+  "actual_updates_per_lambda_probe": 601,
+  "final_model_equals_best_checkpoint": true
+}

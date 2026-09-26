@@ -38,9 +38,9 @@ for eps in "${EPSILONS[@]}"; do
       --eps "$eps" \
       --data-root level_data \
       --out "$OUT/eps-${tag}" \
-      --families 96 \
-      --epochs 3000 \
-      --lambda-epochs 600 \
+      --samples-per-family 24 \
+      --max-steps 3000 \
+      --lambda-steps 600 \
       --seed 0
 done
 

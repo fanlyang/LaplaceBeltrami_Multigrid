@@ -108,9 +108,24 @@ def evaluate_families(
         # Each method is timed on its own, over the whole family. The
         # corrections are computed with a uniform residual interface, so the
         # timer measures the smoother and not the setup.
-        t0 = time.perf_counter()
-        corrections = _corrections(problem, methods, E)
-        total_seconds = time.perf_counter() - t0
+        R = (problem.A @ E.T).T
+        sm = methods.smoothers
+        applications = {
+            "jacobi": lambda: sm.jacobi_batch(R, methods.jacobi_omega),
+            "gs": lambda: np.asarray([sm.gs(r) for r in R]),
+            "sgs_ssor": lambda: np.asarray([sm.ssor(r, methods.ssor_omega) for r in R]),
+        }
+        applications.update({"deeponet_" + name: (lambda dn=dn: dn.from_residual(R))
+                             for name, dn in methods.deeponets.items()})
+        corrections, seconds = {}, {}
+        for name, apply in applications.items():
+            apply()  # warm up separately; exclude residual construction
+            measurements = []
+            for _ in range(3):
+                t0 = time.perf_counter()
+                corrections[name] = apply()
+                measurements.append(time.perf_counter() - t0)
+            seconds[name] = float(np.median(measurements))
 
         e_plus = {name: E - corr for name, corr in corrections.items()}
 
@@ -122,16 +137,12 @@ def evaluate_families(
         else:
             qe = {name: problem.apply_Q_batch(v) for name, v in e_plus.items()}
 
-        n_methods = max(1, len(corrections))
         out[family] = {
             name: {
                 "full": ratio_stats(_norm(v, problem.A) / den),
                 "complement": ratio_stats(_norm(qe[name], problem.A) / den),
                 "n": int(E.shape[0]),
-                # Shared equally: the batched classical sweeps are computed
-                # together, so attributing the whole family time to each would
-                # multiply the reported cost by the number of methods.
-                "seconds": total_seconds / n_methods,
+                "seconds": seconds[name],
             }
             for name, v in e_plus.items()
         }
@@ -159,18 +170,17 @@ def jacobi_bound_check(
 ) -> Dict[str, object]:
     """Check ||Q S_J e||_A / ||e||_A  >=  1 - omega * eta(e).
 
-    Reported as a CHECK, not as an identity. It is the reverse-triangle bound
-
-        ||S_J e||_A = ||e - omega D^{-1}Ae||_A >= ||e||_A (1 - omega eta(e))
-
-    carried through Q_epsilon. That last step is where it can fail: Q_epsilon is
-    an A-orthogonal projection, so ||Q v||_A <= ||v||_A, and if S_J e happens to
-    lie mostly in range(P) then Q S_J e is much smaller than S_J e and the bound
-    does not hold. So this function reports the fraction of samples for which it
-    holds and the worst violation, and it does NOT quietly drop the samples
-    where it fails.
+    For Qe=e and omega>=0, reverse triangle and ||Qv||_A<=||v||_A
+    give ||e-omega QD^{-1}Ae||_A >= ||e||_A-omega||D^{-1}Ae||_A.
+    Significant violations are errors, not expected counterexamples.
     """
     omega = methods.jacobi_omega
+    if omega < 0:
+        raise ValueError("bound requires nonnegative damping")
+    projected = problem.apply_Q_batch(E)
+    complement_defect = _norm(E - projected, problem.A) / _norm(E, problem.A)
+    if not np.all(np.isfinite(complement_defect)) or np.max(complement_defect) > 1e-9:
+        raise ValueError("bound requires Qe=e")
     eta = jacobi_eta(problem, E, methods.smoothers)
 
     R = (problem.A @ E.T).T
@@ -178,8 +188,10 @@ def jacobi_bound_check(
     lhs = _norm(problem.apply_Q_batch(S_J), problem.A) / _norm(E, problem.A)
     rhs = 1.0 - omega * eta
 
-    holds = lhs >= rhs
+    holds = lhs + 1e-10 >= rhs
     violation = rhs - lhs
+    if not np.all(holds):
+        raise AssertionError("projected Jacobi bound violated beyond roundoff")
     return {
         "n": int(E.shape[0]),
         "omega": float(omega),
@@ -190,8 +202,7 @@ def jacobi_bound_check(
         "eta_mean": float(np.mean(eta)),
         "eta_p95": float(np.percentile(eta, 95)),
         "eta_max": float(np.max(eta)),
-        "note": "bound is ||S_J e||_A >= (1 - omega eta)||e||_A; the step "
-                "through Q_epsilon is NOT guaranteed and is measured here",
+        "note": "projected bound is guaranteed for Qe=e; tolerance 1e-10",
     }
 
 

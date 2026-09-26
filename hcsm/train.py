@@ -1,15 +1,8 @@
-"""Stage-I training: minimise L_smooth on coarse-space-complement errors.
+"""Energy-based training with full validation and restored best checkpoints.
 
-The optimiser, schedule, gradient clipping, early stopping and model selection
-are the existing framework's, unchanged: Adam, ``ReduceLROnPlateau`` on the
-validation loss, full-batch validation each log point, and a checkpoint of the
-best epoch. The only difference from the existing trainer is which loss is
-minimised -- ``L_smooth`` instead of ``L_CGC + lambda * L_E`` -- and what the
-training samples are, namely coarse-space-complement parts rather than raw
-errors.
-
-Model selection follows the validation ``L_smooth``, which is the quantity the
-experiment then reports as ``rho_F``. Nothing is selected on the test set.
+The legacy ``epochs`` field counts optimizer updates. ``log_every`` counts
+updates, while scheduler/early-stop patience counts validation checks. Both
+trainers evaluate the complete fixed validation set in bounded batches.
 """
 
 from __future__ import annotations
@@ -30,7 +23,7 @@ from .samplers import Split
 
 @dataclass
 class TrainConfig:
-    """Defaults are the existing framework's, so a reader can diff them."""
+    """Explicit update/check units; epochs is a compatibility field name."""
 
     epochs: int = 3000
     batch_size: int = 32
@@ -38,10 +31,36 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 0.0
     grad_clip: float = 1.0
-    early_stop: int = 400
+    early_stop: int = 25  # consecutive validation checks, not optimizer steps
+    lr_patience_checks: int = 8
     min_delta: float = 1e-6
     log_every: int = 100
     seed: int = 0
+
+
+def validation_means(model, residuals, errors, features, batch_size, loss_fn):
+    """Evaluate ALL validation samples, weighting partial batches correctly."""
+    if len(errors) == 0 or batch_size < 1:
+        raise ValueError("validation requires samples and a positive batch size")
+    totals = None
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(errors), batch_size):
+            end = min(start + batch_size, len(errors))
+            values = loss_fn(model(residuals[start:end], features, None), errors[start:end])
+            if not isinstance(values, tuple):
+                values = (values,)
+            values = np.array([float(v) for v in values])
+            totals = values * (end - start) if totals is None else totals + values * (end - start)
+    return tuple(float(v) for v in totals / len(errors))
+
+
+def restore_best(model, path):
+    """Ensure downstream evaluation uses the weights named by the metadata."""
+    saved = torch.load(path, map_location="cpu", weights_only=True)
+    model.load_state_dict(saved["state_dict"])
+    model.eval()
+    return saved
 
 
 def _tensors(split: Split, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -94,15 +113,15 @@ def train_smoother(
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
                            weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, factor=0.5, patience=max(50, cfg.early_stop // 4))
+        opt, factor=0.5, patience=cfg.lr_patience_checks,
+        threshold=cfg.min_delta, threshold_mode="abs")
     g = torch.Generator().manual_seed(cfg.seed)
 
     history: List[Dict[str, object]] = []
     best, best_epoch, bad = float("inf"), -1, 0
-    n_val = min(cfg.val_batch, Eva.shape[0])
     t0 = time.time()
 
-    for epoch in range(cfg.epochs + 1):
+    for epoch in range(1, cfg.epochs + 1):
         model.train()
         idx = torch.randperm(n_tr, generator=g)[: cfg.batch_size]
         corr = model(Rtr[idx], features, None)
@@ -114,11 +133,10 @@ def train_smoother(
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
 
-        if epoch % cfg.log_every == 0 or epoch == cfg.epochs:
-            model.eval()
-            with torch.no_grad():
-                vc = model(Rva[:n_val], features, None)
-                v_loss = float(stage1_loss(vc, Eva[:n_val], A, AT))
+        if epoch == 1 or epoch % cfg.log_every == 0 or epoch == cfg.epochs:
+            v_loss, = validation_means(
+                model, Rva, Eva, features, cfg.val_batch,
+                lambda corr, errors: stage1_loss(corr, errors, A, AT))
             sched.step(v_loss)
 
             row: Dict[str, object] = {
@@ -130,7 +148,7 @@ def train_smoother(
                 "omega": float(model.omega.item()) if hasattr(model, "omega") else float("nan"),
             }
             history.append(row)
-            log("      epoch %6d  train %.6f  val %.6f  lr %.2e%s"
+            log("      step  %6d  train %.6f  val %.6f  lr %.2e%s"
                 % (epoch, row["train_loss"], v_loss, row["lr"],
                    ("  omega %.4f" % row["omega"]) if np.isfinite(row["omega"]) else ""))
 
@@ -158,6 +176,7 @@ def train_smoother(
         raise SystemExit("training produced no checkpoint -- the first log point "
                          "never improved on infinity, which should be impossible")
 
+    restore_best(model, ckpt)
     return history, {
         "best_epoch": best_epoch,
         "best_val_loss": best,
@@ -217,15 +236,15 @@ def train_penalised(
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
                            weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, factor=0.5, patience=max(50, cfg.early_stop // 4))
+        opt, factor=0.5, patience=cfg.lr_patience_checks,
+        threshold=cfg.min_delta, threshold_mode="abs")
     g = torch.Generator().manual_seed(cfg.seed)
 
     history: List[Dict[str, object]] = []
     best, best_epoch, bad = float("inf"), -1, 0
-    n_val = min(cfg.val_batch, Eva.shape[0])
     t0 = time.time()
 
-    for epoch in range(cfg.epochs + 1):
+    for epoch in range(1, cfg.epochs + 1):
         model.train()
         idx = torch.randperm(n_tr, generator=g)[: cfg.batch_size]
         corr = model(Rtr[idx], features, None)
@@ -237,22 +256,21 @@ def train_penalised(
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt.step()
 
-        if epoch % cfg.log_every == 0 or epoch == cfg.epochs:
-            model.eval()
-            with torch.no_grad():
-                vc = model(Rva[:n_val], features, None)
-                v_loss, v_comp, v_full = penalised_loss(vc, Eva[:n_val], Q, lam)
+        if epoch == 1 or epoch % cfg.log_every == 0 or epoch == cfg.epochs:
+            v_loss, v_comp, v_full = validation_means(
+                model, Rva, Eva, features, cfg.val_batch,
+                lambda corr, errors: penalised_loss(corr, errors, Q, lam))
             sched.step(float(v_loss))
             row = {"epoch": epoch, "train_total": float(loss.item()),
                    "train_complement": float(comp.item()),
                    "train_full": float(full.item()),
-                   "val_total": float(v_loss.item()),
-                   "val_complement": float(v_comp.item()),
-                   "val_full": float(v_full.item()),
+                   "val_total": float(v_loss),
+                   "val_complement": float(v_comp),
+                   "val_full": float(v_full),
                    "lr": float(opt.param_groups[0]["lr"]),
                    "seconds": time.time() - t0}
             history.append(row)
-            log("      epoch %6d  train %.6f (Q %.6f + %.3g*full %.6f)  "
+            log("      step  %6d  train %.6f (Q %.6f + %.3g*full %.6f)  "
                 "val %.6f (Q %.6f)" % (epoch, row["train_total"],
                                        row["train_complement"], lam,
                                        row["train_full"], row["val_total"],
@@ -271,7 +289,9 @@ def train_penalised(
                         % (epoch, best_epoch, best))
                     break
 
+    restore_best(model, os.path.join(out_dir, checkpoint_name))
     return history, {"best_epoch": best_epoch, "best_val_loss": best,
+                     "optimizer_steps": epoch, "validation_samples": len(Eva),
                      "lambda": lam, "epochs_run": history[-1]["epoch"],
                      "seconds": time.time() - t0,
                      "checkpoint": os.path.join(out_dir, checkpoint_name)}
