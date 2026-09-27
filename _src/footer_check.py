@@ -25,8 +25,12 @@ if any(a.shape != imgs[0].shape for a in imgs):
 r, g, b = imgs[-1][:, :, 0], imgs[-1][:, :, 1], imgs[-1][:, :, 2]
 greenish = (g > 100) & (g > r + 30) & (g > b + 30)
 rows = [y for y in range(h) if greenish[y].sum() > 0.8 * w]
-rule_bot = max(rows) + 2
-print(f"image {w}x{h}   footer rule bottom at y={rule_bot}")
+rule_top, rule_bot = min(rows), max(rows) + 2
+# Start the scan a few rows ABOVE the rule: a frame whose last line merely clips
+# the rule has most of its ink in the band, not below it, and starting at
+# rule_bot misses exactly that case.
+scan_from = rule_top - 6
+print(f"image {w}x{h}   footer rule rows {rule_top}..{rule_bot}, scanning from y={scan_from}")
 
 def dark(a):
     return (a[:, :, 0] < 150) & (a[:, :, 1] < 150) & (a[:, :, 2] < 150)
@@ -42,7 +46,7 @@ x0, x1 = int(0.055 * w), int(0.88 * w)
 bad = []
 for p, a in zip(pages, imgs):
     extra = dark(a) & ~ref
-    extra[:rule_bot, :] = False          # only below the rule
+    extra[:scan_from, :] = False         # the rule band and everything below it
     extra[:, :x0] = False
     extra[:, x1:] = False
     n = int(extra.sum())
