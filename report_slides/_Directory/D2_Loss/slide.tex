@@ -1,0 +1,49 @@
+\frametitle{The Objective Used, and What Is Left Out of It}
+\footnotesize
+
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+The choice of error class $\mathcal{H}$ is the substance of the objective. $\mathcal{H}$
+must contain the errors that actually arise in the cycle --- oscillatory components on each
+level, errors produced by restriction, and, on a surface, errors whose local size varies
+with the coefficient and the metric --- and it must contain errors \emph{not} used in
+training, since a small value on the training sample bounds the average behaviour on that
+sample and nothing more. The norm is the discrete \emph{energy} norm, because that is the
+norm in which the iteration contracts.
+
+Samples are generated \alert{algebraically}, so no exact solution of the PDE is ever
+required: an error $e^{(j)}$ is drawn, an artificial residual $r^{(j)}=Ae^{(j)}$ is formed,
+the network returns $\delta v^{(j)}$, and the remaining error is
+$\widetilde e^{(j)}=e^{(j)}-\delta v^{(j)}$. Manufacturing the residual from a
+\emph{known} error means the target is available in closed form and every method in the
+comparison can be scored on the same test errors in the same norm. Five generators ---
+smooth, multiscale, localized, algebraic, mixed --- each on its own random stream, so
+train, validation and test cannot share a draw.
+\end{column}
+\begin{column}{0.47\textwidth}
+\begin{block}{Which component the loss trains on}
+\[
+\mathcal{L}_{\mathrm{smooth}}(\theta)=\frac1N\sum_{i=1}^{N}
+\frac{\bigl\|e_{F,i}-\Bnet\bigl(Ae_{F,i},X\bigr)\bigr\|_A^2}
+     {\bigl\|e_{F,i}\bigr\|_A^2}
+\]
+\alert{Only the complement is used --- as the target \emph{and} as the input.} Nothing in
+this loss mentions $e_C$. That is not an omission: training on $e_F$ alone prevents the
+optimiser from reducing the loss by acting on the coarse component, which is the
+coarse-grid correction's job and is not present in this stage at all.
+\end{block}
+
+\raggedright
+Two constraints put the network in the same class as the objects it is compared against.
+\alert{Homogeneity of degree one} in $r$: every classical smoother is linear and therefore
+exactly homogeneous, the exact solve $\delta e=A^{-1}r$ being the extreme case. \alert{The
+zero-residual fixed point}: the branch is bias-free, so $\mathcal{C}(\kappa,0;\theta)=0$
+holds structurally --- otherwise an exact discrete solution would not be a fixed point and
+the cycle would acquire an error floor no number of iterations removes.
+\end{column}
+\end{columns}
+
+\bre
+The price of leaving the coarse term out is measured, not hidden: $\muC=1.0400$ at width
+$256$, $1.0928$ at width $768$; \emph{every} coarse sample is grown, by up to $19.7\%$.
+\ere

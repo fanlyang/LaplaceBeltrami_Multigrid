@@ -1,0 +1,75 @@
+\frametitle{Two Capacity Diagnostics, Reported Beside Every Number}
+\footnotesize
+
+A DeepONet output has the bilinear form $\delta e=\sum_k b_k(r)T_k(x)$, so the correction
+lies in $\operatorname{span}(T)$ \emph{whatever the branch returns}. A small $\muF$ can
+therefore be a statement about the trunk rather than about smoothing --- and the first run
+of this experiment measured exactly that. \alert{The floor is computable before training.}
+
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\centering
+\textbf{1. The trunk sets a floor} \quad
+$\operatorname{reach}_F(e)=\bigl\|\operatorname{proj}_{\operatorname{span}(T)}e_F
+\bigr\|_A^2/\normA{e_F}^2$, \ $\muF\ge\mathbb{E}\bigl[\sqrt{1-\operatorname{reach}_F}\bigr]$.
+
+\vspace{1mm}
+{\scriptsize
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Trunk & dim & rank & floor on $\muF$ \\
+\midrule
+Fourier $K=2$ & 48 & 24 & $0.997784$ \\
+Fourier $K=6$ & 336 & 168 & $0.965419$ \\
+Fourier $K=10$ & 880 & 440 & $0.786705$ \\
+Fourier $K=12$ & 1248 & 624 & $0.563591$ \\
+Fourier $K=14$ & 1680 & 840 & $0.286669$ \\
+\textbf{Fourier $K=16$} & 2176 & 1023 & \textbf{$0.000675$} \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1mm}
+\raggedright
+The reason is structural, not numerical. $\operatorname{range}(P)$ is what the coarse
+lattice can represent ($16\times16$, Nyquist $8$), so its $A$-orthogonal complement is
+essentially the band \emph{between the coarse and the fine Nyquist} --- modes
+$8\lesssim|k|\le16$. A Fourier trunk needs modes up to $16$. The headline run therefore
+\emph{freezes} the trunk at $K=16$: then $\operatorname{span}(T)=\R^n$, $T^{\mathsf T}T=I$,
+and the floor is \alert{zero} --- provably non-binding.
+\end{column}
+\begin{column}{0.45\textwidth}
+\centering
+\textbf{2. The branch sets a second floor}
+
+\raggedright
+The branch narrows to \emph{width} units, so its Jacobian factors through
+$\R^{\text{width}}$, while the target of this stage is a \emph{linear map of rank $768$}.
+A branch narrower than that cannot express the exact correction, whatever the optimiser
+does. The reference curve is the best \emph{linear} map of rank $\le k$ fitted to the same
+pairs with the same weighting --- a property of the \emph{data}, no network is trained.
+
+\vspace{1mm}
+{\scriptsize
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+rank $k$ & $\muF$ & $\muC$ & $\muC/\muF$ \\
+\midrule
+64 & $0.8057$ & $1.0103$ & $1.25$ \\
+128 & $0.7160$ & $1.0150$ & $1.42$ \\
+\textbf{256} & \textbf{$0.5860$} & $1.0200$ & $1.74$ \\
+384 & $0.4768$ & $1.0224$ & $2.14$ \\
+512 & $0.3666$ & $1.0237$ & $2.79$ \\
+640 & $0.2375$ & $1.0245$ & $4.31$ \\
+\textbf{768} & \textbf{$0.0000$} & $1.0249$ & $\infty$ \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1mm}
+\raggedright
+The curve saturates at the complement dimension --- the rank a branch \emph{must} have to
+do the job. And $\muC\approx1.02$ at \emph{every} rank: selectivity is not something the
+network has to discover. The interesting question is therefore not whether selectivity
+appears but how well the complement is reduced --- and a branch of width $w$ sits near the
+$k=w$ row, so a result \emph{at} that row measures the width, not the optimiser.
+\end{column}
+\end{columns}

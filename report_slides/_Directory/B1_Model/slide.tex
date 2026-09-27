@@ -1,0 +1,78 @@
+\frametitle{The Surface and the Equation}
+\footnotesize
+
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+Let $\Gamma \subset \R^3$ be the surface of a torus with major radius $R = 2$ and minor
+radius $r = 1$, parametrised by $\xi$ (around the ring) and $\eta$ (around the tube),
+\[
+x(\xi,\eta)=\begin{pmatrix}(R+r\cos\eta)\cos\xi\\ r\sin\eta\\ (R+r\cos\eta)\sin\xi\end{pmatrix}.
+\]
+The induced metric is diagonal in these coordinates, with scale factors
+\[
+h_\xi(\eta)=R+r\cos\eta,\qquad h_\eta=r,\qquad dS=h_\xi h_\eta\,d\xi\,d\eta .
+\]
+We solve the Laplace--Beltrami problem with a variable coefficient and a reaction term,
+\[
+-\nabla_g\cdot\bigl(\kappa\,\nabla_g u\bigr)+u=f \qquad\text{on } \Gamma .
+\]
+\begin{itemize}
+\item $\Gamma$ is \emph{closed}: no boundary, so no boundary condition and no boundary
+data.
+\item The reaction term makes the operator coercive --- on a closed surface the pure
+Laplace--Beltrami operator has a one-dimensional null space of constants --- and it makes
+the discrete system positive definite for every coefficient considered.
+\end{itemize}
+\end{column}
+\begin{column}{0.46\textwidth}
+\centering
+\begin{tikzpicture}[font=\small,scale=0.70,every node/.style={transform shape}]
+%--- side view: the tube cross-section ---------------------------------
+\begin{scope}[xshift=0cm]
+  \draw[black!60,dashed] (-3.35,0)--(3.35,0);
+  \draw[thick] (0,0) circle (2);
+  \draw[thick] (-2,0) circle (1);
+  \draw[thick] (2,0) circle (1);
+  \draw[thick] (-2,1)--(2,1);
+  \draw[thick] (-2,-1)--(2,-1);
+  \draw[black!55,dash pattern=on 3pt off 2pt] (0,0)--(-2,0);
+  \draw[black!55,dash pattern=on 3pt off 2pt] (-2,0)--(-2,1);
+  \node[below,font=\scriptsize] at (-1,0) {$R$};
+  \node[right,font=\scriptsize] at (-2,0.55) {$r$};
+  \draw[-{Latex[length=1.8mm]},black!70] (-2,0)--(-1.42,0.55);
+  \node[font=\scriptsize] at (-1.25,0.72) {$\eta$};
+  \node[below,font=\scriptsize] at (0,-2.15) {side view (\emph{the tube})};
+\end{scope}
+%--- top view: the ring ------------------------------------------------
+\begin{scope}[xshift=8.6cm]
+  \draw[thick] (0,0) circle (3);
+  \draw[thick] (0,0) circle (1);
+  \draw[black!55,dash pattern=on 3pt off 2pt] (0,0)--(45:3);
+  \node[font=\scriptsize] at (22:1.75) {$\xi$};
+  \draw[-{Latex[length=1.8mm]}] (0.45,0) arc (0:45:0.45);
+  \node[font=\scriptsize,above] at (1.5,1.3) {$R+r$};
+  \node[below,font=\scriptsize] at (0,-3.15) {top view (\emph{the ring})};
+\end{scope}
+\end{tikzpicture}
+
+\vspace{2mm}
+\raggedright
+{\scriptsize The scale factor $h_\xi = R+r\cos\eta$ makes the metric \alert{non-constant}:
+cells near the inner equator are shorter in the $\xi$ direction than cells near the outer
+equator. This is the geometric reason the problem is not translation-invariant and the
+classical symbol analysis of smoothing does not apply.}
+
+\vspace{2mm}
+\begin{block}{Manufactured solution, and the discretisation}
+{\scriptsize
+$\kappa(\xi,\eta)=1.1+\sin^2\xi\cos^2\eta$, $u(\xi,\eta)=\sin\xi\sin\eta$, so
+$\kappa\in[1.1,2.1]$; $u$ is known in closed form, so every run yields a genuine
+discretisation error, and $f=-\nabla_g\!\cdot(\kappa\nabla_g u)+u$ is evaluated
+\alert{analytically} --- the residual is exact up to round-off. Surface elements
+\cite{DziukElliott,Demlow} in deal.II \cite{dealii}: \texttt{FE\_Q<2,3>(p)} with
+\texttt{MappingQ<2,3>(p)} and \texttt{QGauss<2>(2p+1)} on a \texttt{TorusManifold<2>},
+uniformly refined. One shared cell worker assembles the active system and the level
+matrices, so the hierarchy is a true geometric hierarchy for this operator.}
+\end{block}
+\end{column}
+\end{columns}

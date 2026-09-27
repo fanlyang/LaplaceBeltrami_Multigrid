@@ -1,0 +1,42 @@
+\frametitle{Where a Learned Step Enters, and What It Costs}
+\footnotesize
+
+Relaxation propagates the error by $e^{(k+1)}=(I-BA)e^{(k)}$, reducing the oscillatory
+part quickly and the smooth part slowly; the coarse-grid correction does the opposite. The
+learned step keeps the additive form and replaces the fixed matrix $B$ by a network,
+\[
+v^{+}=v+\delta v,\qquad \delta v=\Bnet\bigl(Ae,X\bigr),\qquad \Stheta=I-\Bnet A ,
+\]
+where $X$ carries the geometric information (the coordinates of the degrees of freedom on
+the surface) and $\theta$ are the weights. Substituting this for one or both sweeps in
+$\ETG=S_{\mathrm{post}}\PiF S_{\mathrm{pre}}$ makes the two-grid stage
+\emph{predictable} rather than exploratory:
+
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\begin{block}{One-sided use $S_{\mathrm{post}}=\Stheta$}
+$\ETG=\Stheta\PiF$, so $\normA{\ETG e}=\normA{\Stheta e_F}$. Measured in the complement
+energy, the two-grid factor is then \alert{exactly} the Stage~I quantity $\rF$ --- the
+single-level measurement is a \emph{direct prediction} for this configuration, not an
+analogy.
+\end{block}
+\end{column}
+\begin{column}{0.48\textwidth}
+\begin{block}{Symmetric use $S_{\mathrm{pre}}=S_{\mathrm{post}}=\Stheta$}
+$\ETG=\Stheta\PiF\Stheta$. Here $\Stheta$ first acts on the \emph{full} error, and
+$\Stheta e_C$ generally acquires a component outside $\operatorname{range}(P)$ which
+$\PiF$ then keeps. Define the \alert{leak}
+$\lambda:=\mathbb{E}\bigl[\normA{\PiF\Stheta e_C}/\normA{e_C}\bigr]$.
+\end{block}
+\end{column}
+\end{columns}
+
+\vspace{1mm}
+A smoother that mapped $\operatorname{range}(P)$ into itself would have $\lambda=0$ and
+would cost the cycle nothing; a smoother that does not, does not. The leak is the quantity
+Stage~I did \emph{not} measure --- though its data determines it --- and it is the first
+thing Stage~II has to compute. It is also the right way to read the defect reported later:
+a measured growth of the coarse component is an \alert{upper bound} on $\lambda$, not
+evidence that $\lambda>0$, because a step that amplified $e_C$ purely \emph{within}
+$\operatorname{range}(P)$ would have $\muC>1$ and $\lambda=0$, and would cost the cycle
+nothing at all.

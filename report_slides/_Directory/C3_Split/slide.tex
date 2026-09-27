@@ -1,0 +1,37 @@
+\frametitle{The Error Splits, and What the Split Assigns}
+\footnotesize
+
+Every algebraic error splits uniquely and $A$-orthogonally,
+\[
+e=e_C+e_F,\qquad e_C=\PiC e\in\operatorname{range}(P),\qquad e_F=\PiF e ,
+\]
+characterised by three identities, all of which hold exactly:
+\[
+\boxed{\;e_C^{\mathsf T}A\,e_F=0,\qquad P^{\mathsf T}A\,e_F=0,\qquad
+\normA{e}^2=\normA{e_C}^2+\normA{e_F}^2\;}
+\]
+The \emph{second} identity carries the interpretation. Since
+$\PiF=I-P(P^{\mathsf T}AP)^{-1}P^{\mathsf T}A$, applying $P^{\mathsf T}A$ to $e_F$ gives
+zero: $e_F$ is exactly the part of the error the coarse grid \alert{cannot see}. The
+correction, which acts by $PA_c^{-1}P^{\mathsf T}$ on the residual, is identically blind to
+it --- equivalently, the residual produced by $e_F$ is orthogonal to the coarse space.
+
+\begin{columns}[T]
+\begin{column}{0.47\textwidth}
+$\R^n=\operatorname{range}(AP)\oplus\ker(P^{\mathsf T})$, of dimensions $n_c$ and
+$n-n_c$. A complement residual satisfies $P^{\mathsf T}r_F=0$; a coarse residual lies in
+$\operatorname{range}(AP)$; and the two subspaces meet only at the origin. So a step trained
+to act on $e_F$ \emph{has never been shown a single input from
+$\operatorname{range}(AP)$}, and its behaviour there is a pure extrapolation --- whether
+that is harmless or harmful is a measurement, not an assumption.
+\end{column}
+\begin{column}{0.47\textwidth}
+So the smoother's duty is not ``reduce the error''. It is narrower: $e_C$ is the
+coarse-grid correction's business, and the correction is identically blind to $e_F$, so
+\alert{if the smoother does not reduce $e_F$ then nothing in the cycle does}. That is what
+makes the first experiment an \emph{extrapolation test} rather than a memorisation test,
+and it is the vocabulary in which the defect found there is stated. The classical
+smoothers are the right comparison set: they too are judged by what they do to the whole
+space, and the split says which part of that matters.
+\end{column}
+\end{columns}

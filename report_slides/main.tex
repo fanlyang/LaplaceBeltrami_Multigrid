@@ -1,0 +1,146 @@
+%----------------------------------------------------------------------
+%
+%   The learned smoother for geometric multigrid on surfaces
+%   Slide version of the 15th-meeting status report.
+%
+%   Same RUB/LKM beamer template as MS_Fanyang_15th: one folder per frame
+%   under _Directory/, pulled in by \load, style files in _stylefiles/.
+%   Sections mirror the six sections of the report one-for-one.
+%
+%----------------------------------------------------------------------
+
+\pdfobjcompresslevel=1            			% solves error 131 in adobe reader on Windows
+\documentclass[20pt]{beamer}
+\usepackage{ifthen}							% needed for stylefiles
+
+%-------------------------------------------------------------------
+% set directory (in case slides are placed in different folder than main)
+%-------------------------------------------------------------------
+ \newcommand{\slides}{}
+
+%-------------------------------------------------------------------
+% lkm info input
+%-------------------------------------------------------------------
+\newcommand{\chairname}{Chair of Numerical Mathematics}	% chair name/ alternative: german
+\newcommand{\profname}{Prof. Dr. Martin Kronbichler} 	% Prof. Name
+
+
+%-------------------------------------------------------------------
+% style files
+%-------------------------------------------------------------------
+% contrast color (alerted text, boxes, structure elements)
+% true=green
+% false=grey
+\newboolean{contrastcolorstyle}
+\setboolean{contrastcolorstyle}{true}
+\usepackage{\slides_stylefiles/rublkm}
+\usepackage{amsmath,amsfonts}
+\usepackage{listings}
+\usepackage{xcolor}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{mindmap}
+\usepackage{tikz}
+% NOTE: no \bibliography here. The reference list is a literal thebibliography
+% inside _Directory/Reference/slide.tex, so \cite resolves against it directly
+% and bibtex is never run.
+
+% definitions Daniel Balzani
+% true  = italic bold variables in math mode
+% false = roman bold variables in math mode
+\newboolean{boldeqnitalic}						% boolean variable (defdb1):
+\setboolean{boldeqnitalic}{true}
+\usepackage{\slides_stylefiles/defdb1}
+
+%-------------------------------------------------------------------
+% notation of the report, so the slides and the report read alike
+%-------------------------------------------------------------------
+\newcommand{\Ac}{A_c}
+\newcommand{\PiC}{\Pi_C}
+\newcommand{\PiF}{\Pi_F}
+\newcommand{\normA}[1]{\lVert #1\rVert_{A}}
+\newcommand{\ETG}{E_{\mathrm{TG}}}
+\newcommand{\Stheta}{S_{\theta}}
+\newcommand{\Bnet}{B_{\theta}}
+\newcommand{\rF}{\rho_F}
+\newcommand{\rC}{\rho_C}
+\newcommand{\muF}{\mu_F}
+\newcommand{\muC}{\mu_C}
+
+%-------------------------------------------------------------------
+% colours and node styles of the two-level correction diagram
+%-------------------------------------------------------------------
+\definecolor{fine}{RGB}{35,91,160}
+\definecolor{coarse}{RGB}{30,130,83}
+\definecolor{corr}{RGB}{138,70,158}
+\definecolor{smooth}{RGB}{184,105,31}
+\tikzset{
+ transfer/.style={-{Latex[length=2.7mm]},very thick},
+ fn/.style={circle,fill=fine,inner sep=2.1pt},
+ cn/.style={circle,fill=coarse,inner sep=2.6pt},
+ cp/.style={circle,draw=corr,line width=1pt,minimum size=9pt,inner sep=0pt},
+ meshlabel/.style={anchor=west,font=\small},
+}
+
+%-------------------------------------------------------------------
+% load slides
+%-------------------------------------------------------------------
+\begin{document}
+\titleslide{\load{preface}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Outline
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\load{_Directory/Outline}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 1. The question and the programme
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{The Question and the Programme}
+\load{_Directory/A1_Question}		% the working solver, the node, attribution, the three stages
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 2. The model problem
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{The Model Problem}
+\load{_Directory/B1_Model}			% the torus, the equation, the discretisation
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 3. Multigrid, and how the error propagates
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Multigrid and Error Propagation}
+\load{_Directory/C1_TwoLevel}		% the hierarchy, the correction, C_h
+\load{_Directory/C2_Projection}		% C_h = Pi_F exactly, E_TG
+\load{_Directory/C3_Split}			% e = e_C + e_F, the direct sum, the extrapolation reading
+\load{_Directory/C4_LearnedStep}	% where the network enters, one-sided vs symmetric, the leak
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 4. The learned smoother: the objective
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{The Learned Smoother}
+\load{_Directory/D1_Objectives}		% the three objectives
+\load{_Directory/D2_Loss}			% which one, the constraints, what is left out
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 5. Numerical experiments
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Numerical Experiments}
+\load{_Directory/E1_Classical}		% the baseline is not weak
+\load{_Directory/E2_Setting}		% the Stage I experiment, and what is asserted
+\load{_Directory/E3_Diagnostics}	% trunk floor, rank floor
+\load{_Directory/E4_Measurement}	% the table and the answer
+\load{_Directory/E5_Defect}			% per mechanism, and the defect
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 6. Conclusions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusions, Protocol, and Next Steps}
+\load{_Directory/F1_Conclusion}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% References
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\load{_Directory/Reference}
+
+\end{document}

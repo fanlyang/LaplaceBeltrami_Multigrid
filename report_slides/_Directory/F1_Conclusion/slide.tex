@@ -1,0 +1,60 @@
+\frametitle{What Is Established, and What Comes Next}
+\footnotesize
+
+\begin{columns}[T]
+\begin{column}{0.49\textwidth}
+\textbf{The error split is exact and verified.} $e=e_C+e_F$ with $e_C^{\mathsf T}Ae_F=0$ and
+$P^{\mathsf T}Ae_F=0$ hold to $\sim10^{-15}$ on the actual hierarchy, asserted by the
+program rather than assumed. They fix what each operation of the cycle is responsible for,
+and they make the first experiment an \emph{extrapolation test}.
+
+\textbf{The loss is a modelling decision with a defensible answer.} The damping objective
+is the one a single-level experiment can \emph{interpret}; the energy norm is the one the
+iteration contracts in; the weighting makes the optimised metric and the reported metric the
+same; homogeneity and the fixed point put the network in the same class as its comparators.
+
+\textbf{The learned step does learn the smoothing property}, and the two capacity
+diagnostics are what make that readable. With a branch of the complement's dimension
+($768$): $\muF=0.1456$, $\muC=1.0928$, $\muC/\muF=7.50$ --- first of six, better than
+symmetric Gauss--Seidel, no amplified sample. With the trunk provably non-binding and the
+rank-$768$ linear limit at $0.0000$, the residual is an \emph{optimisation gap}, not a
+representational one.
+
+\textbf{And one defect is stated plainly:} every coarse sample is amplified, by up to
+$19.7\%$, and the better the complement reduction the worse the amplification.
+\end{column}
+\begin{column}{0.48\textwidth}
+\centering
+\textbf{The sequence of next experiments}
+\vspace{1mm}
+
+{\scriptsize
+\begin{tabular}{@{}p{0.5cm}p{4.3cm}p{7.4cm}@{}}
+\toprule
+\# & Experiment & Why it is next \\
+\midrule
+1 & \textbf{Stage II: the leak $\lambda$ and the two-grid propagator} &
+Needs \emph{no} new training and no new data --- the same test errors and weights answer
+it, because $\ETG=S_{\mathrm{post}}\PiF S_{\mathrm{pre}}$ exactly. It also \emph{checks
+Stage~I}, since the one-sided factor must reproduce $\muF=0.1456$. \\[3pt]
+2 & \textbf{Re-tune per level; grow $p$ with $n_{\text{dof}}$} &
+$\muF$ at width $768$ is a statement about \emph{one} level; the complement dimension
+changes with refinement, so the width that can represent the exact correction changes too. \\[3pt]
+3 & \textbf{The coarse-space term in the loss} &
+Now that the leak is a \emph{measured} quantity, adding a penalty for it is a different
+experiment from adding one that was never measured. \\[3pt]
+4 & \textbf{Stage III: the complete V-cycle} &
+Only after 1--3 have fixed the design: a cycle result cannot attribute a gain to a node the
+earlier stages have not isolated. \\
+\bottomrule
+\end{tabular}}
+\end{column}
+\end{columns}
+
+\vspace{-1mm}
+\alert{The protocol, fixed now, before the experiment:} (i) the same hierarchy, test errors
+and norm; (ii) free parameters selected on validation, scored on test; (iii) the baseline
+re-run inside the same cycle; (iv) the \emph{distribution} reported, not only the mean; and
+(v) the capacity bound published next to the result. Items (iv) and (v) exist because this
+work \emph{needed} them: a run at the wrong branch width produced a plausible and wrong
+conclusion that only the distribution exposed.

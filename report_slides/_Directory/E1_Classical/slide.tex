@@ -1,0 +1,47 @@
+\frametitle{The Classical Reference: the Baseline Is Not Weak}
+\footnotesize
+
+Establishing that is the first result rather than a preliminary. Cubic ($Q_3$)
+discretisation, four uniform refinement cycles, outer iteration to a relative residual
+tolerance of $10^{-10}$:
+
+\vspace{1mm}
+\centering
+\begin{tabular}{@{}rrrrrrrr@{}}
+\toprule
+Cycle & Cells & Levels & DoFs & CG iterations & $H^1$ error & $L^2$ error & $L^\infty$ error \\
+\midrule
+0 & 16 & 1 & 144 & 1 & 5.856e-02 & 1.617e-02 & 5.417e-03 \\
+1 & 64 & 2 & 576 & 12 & 8.054e-03 & 1.114e-03 & 4.698e-04 \\
+2 & 256 & 3 & 2304 & 13 & 1.035e-03 & 7.225e-05 & 3.394e-05 \\
+3 & 1024 & 4 & 9216 & 14 & 1.302e-04 & 4.567e-06 & 2.175e-06 \\
+\bottomrule
+\end{tabular}
+
+\vspace{2mm}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\raggedright
+\textbf{The discretisation converges at the expected rates.} Halving the mesh size divides
+the $H^1$ error by $7.27$, $7.79$, $7.94$ and the $L^2$ error by $14.5$, $15.4$, $15.8$
+--- observed orders $2.86\to2.99$ and $3.86\to3.98$, the optimal $\mathcal{O}(h^p)$ and
+$\mathcal{O}(h^{p+1})$ for cubic elements.
+\end{column}
+\begin{column}{0.48\textwidth}
+\raggedright
+\textbf{The multigrid preconditioner is doing its job.} The iteration count barely moves
+--- $12$, $13$, $14$ --- while the mesh is refined three times and the system grows
+sixty-fourfold, from $144$ to $9216$ unknowns. This is mesh-independence.
+(\alert{Cycle~0 has a single level}, so its coarse solve is exact and CG terminates in one
+step; it is not evidence either way.)
+\end{column}
+\end{columns}
+
+\vspace{1mm}
+\begin{block}{The constraint this puts on any claim}
+A learned smoother cannot distinguish itself by fixing a failure of scalability that does
+not occur. What it can be asked to do is reduce the \emph{constant}: fewer iterations to
+the same tolerance, or the same count at lower cost per iteration. The reverse also holds,
+and it is part of the result --- a learned smoother that shows no gain here has not been
+shown useless, because the baseline it failed to beat was not weak.
+\end{block}

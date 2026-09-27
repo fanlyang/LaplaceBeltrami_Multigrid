@@ -1,0 +1,38 @@
+\frametitle{The Hierarchy, and One Two-Level Step}
+\footnotesize
+
+Uniform refinement of the torus mesh gives a nested sequence of finite element spaces
+$V_0\subset V_1\subset\dots\subset V_L$, with $\dim V_\ell=n_\ell$ and
+$h_\ell=h_0 2^{-\ell}$. Between consecutive levels we use the canonical prolongation and
+the transposed restriction, with the Galerkin coarse operator:
+\[
+P_\ell=P_{\ell\leftarrow\ell-1}:\R^{n_{\ell-1}}\to\R^{n_\ell},
+\qquad
+R_\ell:=P_\ell^{\mathsf T},
+\qquad
+A_{c,\ell}=P_\ell^{\mathsf T}A_\ell P_\ell .
+\]
+Since $A_\ell$ is SPD and $P_\ell$ has full column rank, $A_{c,\ell}$ is SPD as well, and
+the coarse problem is the restriction of the fine problem to the coarse space rather than
+an independently assembled operator. For the rest of this part the level index is fixed
+and dropped: $A:=A_\ell$, $P:=P_\ell$, $A_c:=P^{\mathsf T}AP$.
+
+\vspace{1mm}
+One two-level step is: \emph{relax, form the residual, restrict it, solve the coarse
+problem for the correction, prolongate and add, relax again}. Writing $\widetilde u$ for
+the current approximation, $r=b-A\widetilde u$ for the residual and
+$e=A^{-1}r=u-\widetilde u$ for the algebraic error, the coarse correction $e_H$ solves
+$A_c e_H=Rr$, so
+\[
+\widetilde u^{\text{new}}=\widetilde u+PA_c^{-1}R\,r ,
+\qquad
+e^{\text{new}}=e-PA_c^{-1}RAe
+=\underbrace{\bigl(I-PA_c^{-1}RA\bigr)}_{=:\,C_h}e .
+\]
+
+\begin{block}{}
+$C_h$ is what one two-level step does to the error, in one line. The next frame says it is
+not merely \emph{close to} a projection: with the exact coarse solve and the transposed
+restriction used here, it \emph{is} exactly the operator the error splitting is built
+from --- and that is why the analysis that follows is possible at all.
+\end{block}

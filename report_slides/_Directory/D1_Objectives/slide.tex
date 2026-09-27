@@ -1,0 +1,43 @@
+\frametitle{Three Objectives, and Which One Is Used}
+\footnotesize
+
+A classical smoother is fixed by a few discrete choices --- a scheme, a damping factor, a
+sweep count --- and analysed through the propagator $S=I-BA$. A learned smoother is fixed
+instead by the weights of a network, and a network is not a scheme. The decision that
+replaces the choice of scheme is therefore the choice of \emph{objective}, and it is not
+unique.
+
+\vspace{1.5mm}
+\begin{tabular}{@{}p{3.5cm}p{7.1cm}p{13.2cm}@{}}
+\toprule
+Objective & What is minimised & What it buys, and what it costs \\
+\midrule
+\textbf{1. Correction matching} &
+$\frac1N\sum_j\bigl\|\mathcal{C}(\kappa,r^{(j)})-Br^{(j)}\bigr\|^2$ &
+Regression onto an operation that is already implemented, so the easiest to train --- and
+it \emph{cannot exceed the smoother it imitates}. \\[3pt]
+\textbf{2. Error damping} &
+$\frac1N\sum_j\bigl\|e^{(j)}-\mathcal{C}\bigl(\kappa,Ae^{(j)}\bigr)\bigr\|^2
+ \big/ \bigl\|e^{(j)}\bigr\|^2$ &
+Trains the network to \emph{reduce the error} rather than to imitate an operator.
+\alert{This is the objective used here.} \\[3pt]
+\textbf{3. Cycle unrolling} &
+$\bigl\|\mathcal{V}_\theta(0)-A^{-1}b\bigr\|$ &
+Optimises the quantity ultimately of interest through a differentiable V-cycle. Most
+aligned with the goal, \emph{hardest to interpret}: a gain cannot be assigned to any one
+node. \\
+\bottomrule
+\end{tabular}
+
+\vspace{2mm}
+Objective~3 is what a complete solver would be trained against, and Stage~III will have to
+answer for it \cite{huang2021learning}. Objective~2 is what Stage~I can \emph{interpret}:
+it measures \emph{one step}, so a result is attributable to that step and not to a
+composition.
+
+\bre
+The choice is a modelling decision, not a technicality. Objective~2 is also the only one of
+the three that can be scored on the same test errors, in the same norm, for a network and
+for Jacobi, Gauss--Seidel and SSOR alike --- which is what makes the classical baseline
+fair.
+\ere

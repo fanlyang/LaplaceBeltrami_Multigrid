@@ -1,0 +1,50 @@
+\frametitle{The Measurement, and the Answer}
+\footnotesize
+
+$1024$ test errors, level $\ell=3$, $n=1024$, complement dimension $768$. Every method is
+scored on the \emph{same} test errors in the \emph{same} $A$-energy norm. The width-$768$
+run reached its best validation $\muF=0.1701$ at epoch $1199$ of $1200$, in $2092$~s.
+
+\vspace{1mm}
+\centering
+{\scriptsize
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+Smoother & $\muF$ & $\muC$ & $\max\rF$ & $\mathbb{P}(\rF{>}1)$ &
+median & sd & p95 & $\muC/\muF$ \\
+\midrule
+Jacobi & $0.6996$ & $0.6734$ & $1.4310$ & $0.1387$ & $0.6653$ & $0.2598$ & $1.3035$ & $0.96$ \\
+Damped Jacobi & $0.4248$ & $0.7380$ & $0.7230$ & $0.0000$ & $0.4064$ & $0.0592$ & $0.5522$ & $1.74$ \\
+Gauss--Seidel & $0.3664$ & $0.6180$ & $0.5658$ & $0.0000$ & $0.3511$ & $0.0476$ & $0.4513$ & $1.69$ \\
+Symmetric GS & $0.1889$ & $0.4695$ & $0.3848$ & $0.0000$ & $0.1743$ & $0.0397$ & $0.2606$ & $2.49$ \\
+SSOR & $0.1889$ & $0.4695$ & $0.3848$ & $0.0000$ & $0.1743$ & $0.0397$ & $0.2606$ & $2.49$ \\
+\textbf{DeepONet (width 768)} & \textbf{$0.1456$} & $1.0928$ & $0.3198$ & $0.0000$ &
+$0.1334$ & $0.0886$ & $0.2695$ & \textbf{$7.50$} \\
+$A^{-1}$ (reference) & $0.0000$ & $0.0000$ & $0.0000$ & $0.0000$ & $0.0000$ & $0.0000$ &
+$0.0000$ & --- \\
+ridge (diagnostic) & $0.0000$ & $1.0249$ & $0.0000$ & $0.0000$ & $0.0000$ & $0.0000$ &
+$0.0000$ & $\infty$ \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1.5mm}
+\begin{block}{Answer: yes --- and it is the best single-step method in the table}
+\raggedright
+With a branch wide enough to represent the complement correction,
+$\muF=0.1456$, $\muC=1.0928$, $\muC/\muF=7.50$, which places it first of the six methods on
+complement reduction:
+DeepONet $0.146<$ SymGS $0.189<$ GS $0.366<$ damped Jacobi $0.425<$ Jacobi $0.700$. It
+removes $85\%$ of the complement's $A$-energy in one step --- better than symmetric
+Gauss--Seidel --- and \emph{no sample is amplified} ($\mathbb{P}(\rF>1)=0$, worst case
+$\max\rF=0.320$).
+\end{block}
+
+\bre
+SSOR and symmetric Gauss--Seidel coincide because $\omega=1$ \emph{is} symmetric GS for
+this sweep; the table shows them agreeing to every printed digit, which is a check on the
+implementation rather than a coincidence. The network and damped Jacobi both have a free
+parameter selected on the \emph{same} validation metric and scored on test, so the
+comparison is symmetric. The ridge and rank-$k$ rows are \emph{diagnostics, not
+competitors}: without them there is nothing to say whether $\muF=0.15$ is good, bad, or
+exactly what the architecture permits.
+\ere

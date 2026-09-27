@@ -1,0 +1,43 @@
+\frametitle{Starting Point, and the Question}
+\footnotesize
+
+\begin{itemize}
+\item The starting point is a \textbf{classical, working solver}: the Laplace--Beltrami
+problem with a variable coefficient, discretised on the surface of a torus with high-order
+surface finite elements, solved by CG preconditioned by a geometric multigrid V-cycle.
+\item Both parts are implemented and verified. The discretisation converges at the optimal
+rates for the degree used, and the preconditioned iteration is \alert{mesh-independent} ---
+it reduces the residual by $10^{-10}$ in essentially the same number of steps whether the
+system has one hundred or ten thousand unknowns.
+\end{itemize}
+
+\vspace{1mm}
+A learned smoother is therefore \emph{not} asked to repair a solver that fails. It cannot
+distinguish itself by restoring scalability, because scalability is already there. What it
+can be asked to do is narrower: reduce the \emph{constant}.
+
+\begin{block}{The question this work answers}
+\itshape
+Not whether a network can solve the surface problem, and not whether it can replace the
+multigrid solver. The question is whether a network can supply the correction that
+\emph{one node} of the existing cycle computes.
+\end{block}
+
+\begin{itemize}
+\item The \textbf{smoothing node} is the natural place to ask this, for a structural
+reason rather than an opportunistic one: of smoothing, residual evaluation, restriction,
+the coarse solve and prolongation, the relaxation sweep is the \emph{only} operation whose
+replacement leaves the multilevel structure intact.
+\item Everything else keeps its classical form, so a change in the cycle's behaviour is
+\alert{attributable to the substituted node} rather than to a re-engineering of the method
+--- and that literature has been shown to suffer from weak baselines and reporting bias
+\cite{mcgreivy2024weak}.
+\end{itemize}
+
+\vspace{1mm}
+The work is organised as three stages, named from the beginning so that a Stage~I result is
+not read as more than it is: \textbf{I} --- one level, does the learned step reduce the
+components the coarse grid cannot reach? \emph{(measured; this talk.)} \textbf{II} --- what
+does it do to the components the coarse grid \emph{does} reach? \emph{(designed.)}
+\textbf{III} --- does the substitution survive the recursive V-cycle? \emph{(protocol fixed
+in advance.)}

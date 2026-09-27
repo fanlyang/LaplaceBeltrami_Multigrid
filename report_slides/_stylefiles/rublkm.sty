@@ -1,0 +1,425 @@
+%-----------------------------------------------------------------------
+%
+% Style-File for publications of the 
+%                                
+% Chair of Continuum Mechanics, Ruhr-Universität Bochum
+% Prof. Dr.-Ing. habil. Daniel Balzani
+% 
+%
+%  version from 17/03/2021 
+%
+%%-----------------------------------------------------------------------
+
+
+
+
+%-------------------------------------------------------------------
+%packages
+%-------------------------------------------------------------------
+\RequirePackage[english]{babel}	  % main language is english	%may need to remove ngerman, along with the ","
+\RequirePackage[utf8]{inputenc}
+%\RequirePackage{helvet}										% TODO: find a better style to implement
+%\renewcommand{\familydefault}{\sfdefault}	% set font to "arial-like"
+\RequirePackage[autostyle]{csquotes}
+
+
+% use \enquote{} to use quotation marks
+\RequirePackage{graphicx}									% to include pictures
+\RequirePackage{subcaption}
+\RequirePackage[font=footnotesize,justification=justified,singlelinecheck=false]{caption}									% customizable captions
+\RequirePackage{tikz}											% creation of graphics with pgf
+\usetikzlibrary{arrows.meta}								% arrows
+\RequirePackage{color}										% for colored text, definition of colors etc.
+\RequirePackage{amsmath}									% math package, needed for defdb1
+\RequirePackage{amssymb}									% more math symbols, mathbb, needed for defdb1
+\RequirePackage{mathtools}								% extension package to amsmath
+\RequirePackage{booktabs}									% bold lines in tabulars
+\RequirePackage{colortbl}									% colored rows, columns and cells in tabulars
+\RequirePackage{relsize}										% relative font size definition (\smaller, \larger)
+% \RequirePackage{pgfpages}						% needed if option 'show notes on second screen' is used
+\RequirePackage{rotating}									% rotate objects
+\RequirePackage{xcolor}										% utilize fcolorbox to customize colored frames 
+\RequirePackage{etoolbox}									% custom definitions for specific environments c.f. "\AtBeginEnvironment{}{}" command
+\RequirePackage{adjustbox}									% 
+\RequirePackage{marvosym}									% arrows
+
+% movies
+\usepackage{multimedia}							% package to include movies
+\newboolean{extplayer}								% Boolean variable to control inclusion of movies
+\setboolean{extplayer}{false}					% false = embedded; true = externalviewer
+
+
+
+%-------------------------------------------------------------------
+% define command to load slides, adaptations to read slides in the old foil format %-------------------------------------------------------------------
+\newcommand{\dir}{}
+\newcommand{\setdir}[1]{\renewcommand{\dir}{#1}}
+\newcommand{\load}[1]{\setdir{\slides#1}\begin{frame}[t]\input{\dir/slide.tex}\end{frame}}
+\newcommand{\foilhead}{\frametitle}
+
+\newcommand{\gfxpath}{\dir} % erforderlich wegen xfig??
+% TODO: workaround problems with pspdftex
+
+
+%-------------------------------------------------------------------
+% definitions RUB
+%-------------------------------------------------------------------
+% color definitions
+\definecolor{rub_blue}{cmyk}{1.0,0.50,0.0,0.60}    
+\definecolor{rub_green}{cmyk}{0.75,0.0,1.0,0}       
+\definecolor{rub_green40}{cmyk}{0.3,0.0,0.4,0}	
+\definecolor{rub_grey}{cmyk}{0,0,0,0.5}%stand vor 28/06/2019:{0,0,0,0.4}	
+\definecolor{rub_grey40}{cmyk}{0,0,0,0.16}
+\definecolor{rub_grey07}{cmyk}{0,0,0,0.1}%stand vor 28/06/2019:{0,0,0,0.07}
+\definecolor{orange}{rgb}{1,0.5,0}
+\definecolor{rub_orange}{rgb}{1.0,0.4,0}% update vom 17/03/2021
+\definecolor{rub_ref}{cmyk}{0,0,0,0.6}% update vom 17/03/2021
+
+
+% color assignments
+\newcommand{\generalcolor}{rub_blue}		% general text color
+\newcommand{\titlecolor}{rub_blue}				% color for frametitle
+\newcommand{\subtitlecolor}{rub_blue}		% color for framesubtitle
+\newcommand{\footcolor}{rub_blue}				% color for footer text
+\newcommand{\refcolor}{rub_ref} % update vom 17/03/2021
+% \newcommand{\refcolor}{rub_grey} 				% color for references
+\newcommand{\moviecolor}{rub_grey}			% color for movie hints
+
+\ifthenelse{\boolean{contrastcolorstyle}}{	% colorboxes
+ \newcommand{\boxcolor}{rub_green40}}{
+ \newcommand{\boxcolor}{rub_grey40}}		
+
+\ifthenelse{\boolean{contrastcolorstyle}}{    % footlinecolor
+ \newcommand{\footlinecolor}{rub_green}}{	
+ \newcommand{\footlinecolor}{rub_grey}}		
+
+\ifthenelse{\boolean{contrastcolorstyle}}{    % structure elements (itemize/enumerate)
+ \newcommand{\structurecolor}{rub_green}}{	
+ \newcommand{\structurecolor}{rub_grey}}	
+
+\ifthenelse{\boolean{contrastcolorstyle}}{    % alertcolor
+ \newcommand{\alertcolor}{rub_green}}{	
+ \newcommand{\alertcolor}{rub_grey}}		
+    
+\newcommand{\boxcolorlight}{rub_grey07} 
+  
+
+%-------------------------------------------------------------------
+%  footline layout
+%-------------------------------------------------------------------
+% put together footline
+\setbeamertemplate{footline}{
+	\begin{picture}(1,1.3)
+		\put( 0,1.6){\textcolor{\footlinecolor}{\rule{\textwidth}{2.0pt}}}								% line
+		\put( 1.47,0.9){\textbf{\profname}}
+		\put(1.47,0.5){\chairname}											
+		\put(21.60,0.1){\includegraphics[width=0.20\hsize]{_figures/RUB_Logo.pdf}}						% rublabel		
+		\put( 27,0.6){\textcolor{\structurecolor}{\bfseries\footnotesize\insertframenumber}}	% slide-#
+	\end{picture}	
+}
+
+
+
+%-------------------------------------------------------------------
+% titleslide layout
+%-------------------------------------------------------------------
+\newcommand{\titleslide}[1]{
+	{
+		\setbeamertemplate{headline}{
+			\begin{picture}(27.94,4.35)
+				\unitlength1cm
+				\unitlength1cm
+				\put( 21.80, 0.0){\includegraphics[width=0.165\hsize]{_figures/RUB_label_2000x2000.pdf}}
+				\put( 1.53, 2.40){\includegraphics[height=0.02\hsize]{_figures/RUB_schriftzug_3600x236.pdf}}
+				\put( 1.53,1.7){\footnotesize\textbf{\chairname}}
+				\put(1.53,1){\footnotesize\profname}	
+				% Schriftzughoehe eigentlich 1/12 der Logohoehe
+			\end{picture}
+		}
+		\setbeamertemplate{footline}{
+		}
+		#1 % #1 = begin{frame}...\end{frame}
+	}
+}
+
+
+
+%-------------------------------------------------------------------
+% further layout adaptations
+%-------------------------------------------------------------------
+\unitlength1cm
+\raggedright    % switch of first line indentations in all environments
+\fboxrule1mm % make linewidth of fcolorbox 1mm
+\addtolength{\parskip}{3mm} % vertical distance between paragraphs
+\geometry{paperwidth=279.4mm,paperheight=215.9mm} % set size to format of old slides
+\setbeamersize{text margin left=14.7mm, text margin right=14.7mm} % -> textwith=250mm
+
+% format of the frametitle and framesubtitle:
+\setbeamerfont{frametitle}{size=\large,series=\bfseries}
+\setbeamertemplate{frametitle}[default][left]
+\setbeamerfont{framesubtitle}{size=\small, series=\bfseries}
+\addtobeamertemplate{frametitle}{\hspace*{0.9cm}}{}							 	% modify title/text x-position
+\addtobeamertemplate{frametitle}{\vspace*{1.0cm}}{\vspace*{0.8cm}}	% modify title/text y-position
+
+% color allocations
+\setbeamercolor{frametitle}{fg=\titlecolor}       % color for titles, fg:fore-, bg:background
+\setbeamercolor{framesubtitle}{fg=\subtitlecolor} % color for framesubtitle
+\setbeamercolor{normal text}{fg=\generalcolor}    % change text color globally
+\setbeamercolor{structure}{fg=\structurecolor}    % color for structure elements (e.g. items)
+\setbeamercolor{alerted text}{fg=\alertcolor}     % color for alerted text
+\setbeamercolor{block title}{bg=\boxcolorlight}					% color boxes using blocks
+\setbeamercolor{block body}{bg=\boxcolor}			% color boxes using blocks
+
+% math mode font / font size adaptations
+\usefonttheme[onlymath]{serif}                                   % serif font for math mode
+\setbeamerfont{alerted text}{size=\larger[1],series=\normalfont} % alerted -> larger font size 
+\newcommand{\mbeq}{\overset{!}{=}}% must be equal sign
+
+ % structure elements
+ \newcommand{\arrow}{\begin{Large}\textcolor{\structurecolor}{\MVRightarrow}\end{Large}$\ $}
+
+% set itemize/enumerate symbols
+%\renewcommand*\textbullet{\textcolor{\structurecolor}{\text{$\bullet$}}} % textbullets globally in structure color
+\setbeamertemplate{itemize item}{\textbullet} % default itemize item
+\newcommand{\arrowitem}{\item[\begin{Large}\textcolor{\structurecolor}{\MVRightarrow}\end{Large}]} % \arrow instead of \item within itemize
+
+% colorboxes
+\newenvironment{userbox}[2][\textwidth]
+    {\ifthenelse{\equal{#2}{}}
+            {\begin{beamercolorbox}[wd=#1,rounded=true,shadow=true,leftskip=2mm,rightskip=2mm]{block body}} %
+            {\begin{beamercolorbox}[wd=#1,ht=#2,rounded=true,shadow=true,leftskip=2mm,rightskip=2mm]{block body}}}
+  {\end{beamercolorbox}}
+   
+\newenvironment{userbox2}[2][\textwidth]
+ {\ifthenelse{\equal{#2}{}}
+            {\begin{beamercolorbox}[wd=#1,rounded=true,shadow=true,leftskip=2mm,rightskip=2mm]{block body}} %
+            {\begin{beamercolorbox}[wd=#1,ht=#2,rounded=true,shadow=true,leftskip=2mm,rightskip=2mm]{block body}}}
+  {\end{beamercolorbox}}
+\AtBeginEnvironment{userbox2}{\setbeamercolor{block body}{bg=\boxcolorlight}}
+
+% theorems/definitions/proofs
+%\setbeamertemplate{blocks}[rounded][shadow=true] %[default]
+%\AtBeginEnvironment{theorem}{\setbeamercolor{block body}{bg=white}}
+%\AtBeginEnvironment{definition}{\setbeamercolor{block body}{bg=white}}
+%\AtBeginEnvironment{proof}{\setbeamercolor{block body}{bg=white}}
+
+% references
+\newenvironment{reference}{\begin{footnotesize}\color{\refcolor}}{\end{footnotesize}}
+\newcommand{\bre}{\begin{reference}}
+\newcommand{\ere}{\end{reference}}
+
+% captions of tables and figures
+\captionsetup{labelformat=empty}
+\setbeamertemplate{caption label separator}{: } % colon without space
+\setbeamertemplate{caption}[default] % default/numbered/caption name own line
+
+% supress navigation symbols:
+\setbeamertemplate{navigation symbols}{}
+
+% adapt qed symbol 
+\setbeamertemplate{qed symbol}{$\blacksquare$}
+
+% visibility of overlay objects
+\setbeamercovered{transparent=20} % from 0 to 100
+
+% define command indicate movies
+\newcommand{\moviehint}{\LARGE\textcolor{\moviecolor}{\fcolorbox{\moviecolor}{white}{$\, $\Forward}}}
+
+% new command for non-italic formula text
+\newcommand{\noni}[1]{\mathrm{#1}}
+
+% boldface mathcal letters
+\newcommand{\mcP}{\boldsymbol{\mathcal{P}}}
+
+%-------------------------------------------------------------------
+% output of notes
+%-------------------------------------------------------------------
+\makeatletter
+\defbeamertemplate{note page}{plain2}
+{
+  \vspace{8mm}
+  \hbox{\usebeamerfont{frametitle}\insertshortframetitle[width=23cm]}
+  \begin{minipage}{2.4\textwidth}
+  \normalsize\normalfont\insertnote
+  \end{minipage}
+}
+\makeatother
+% options: hide notes/show notes/show only notes/show notes on second screen
+% REMARK: if you want to use 'show notes on second screen' you have to include the
+%         \usepackage{pgfpages}
+\setbeameroption{hide notes} 
+\setbeamertemplate{note page}[plain2]
+
+
+
+
+
+%______________________________________________________________________________________
+%
+% REMARKS
+%______________________________________________________________________________________
+
+%-------------------------------------------------------------------
+% 'old' RUB CD-colors (replace 'definitions RUB')
+%-------------------------------------------------------------------
+% color definitions cf 'http://www.e-paint.co.uk/Lab_values.asp?cRange=Pantone%20C&cRef=540+C' [2018/02/02]
+%\definecolor{rub_blue}{cmyk}{1.0,0.45,0.0,0.66}     % Pantone 540 100% 
+%\definecolor{rub_blue80}{cmyk}{0.8,0.36,0.0,0.53}   % Pantone 540 80%
+%\definecolor{rub_blue70}{cmyk}{0.6,0.27,0.0,0.40}   % Pantone 540 70% TODO: find later on and replace with rub blue 60
+%\definecolor{rub_blue60}{cmyk}{0.6,0.27,0.0,0.40}   % Pantone 540 60%
+%\definecolor{rub_blue40}{cmyk}{0.4,0.18,0.0,0.26}   % Pantone 540 40%
+%\definecolor{rub_blue20}{cmyk}{0.2,0.09,0.0,0.13}   % Pantone 540 20%
+%
+%\definecolor{rub_green}{cmyk}{0.50,0.0,1.0,0.0}			% Pantone 376 100%
+%\definecolor{rub_green80}{cmyk}{0.40,0.0,0.8,0.0}		% Pantone 376 80%
+%\definecolor{rub_green60}{cmyk}{0.30,0.0,0.6,0.0}		% Pantone 376 60%
+%\definecolor{rub_green40}{cmyk}{0.20,0.0,0.4,0.0}		% Pantone 376 40%
+%\definecolor{rub_green20}{cmyk}{0.10,0.0,0.2,0.0}		% Pantone 376 20%
+%\definecolor{rub_green15}{cmyk}{0.075,0.0,0.15,0.0}	% Pantone 376 15%
+
+%\definecolor{rub_grey}{cmyk}{0.03,0.03,0.03,0.10}		% Pantone Cool Grey 2
+%\definecolor{rub_grey}{cmyk}{0.0,0.0,1.0,0.21}   % Pantone Cool Grey 2
+
+
+
+%-------------------------------------------------------------------
+% definitions TU Dresden (replace 'definitions RUB ff') 
+%-------------------------------------------------------------------
+% % House color HKS 41 100%, 90%,... 10%:
+% \definecolor{tudresden_blue}{cmyk}{1.0,0.70,0.10,0.50}   % HKS 41 100%
+% \definecolor{tudresden_blue90}{cmyk}{0.9,0.63,0.09,0.45} % HKS 41 90%
+% \definecolor{tudresden_blue80}{cmyk}{0.8,0.56,0.08,0.40} % HKS 41 80%
+% \definecolor{tudresden_blue70}{cmyk}{0.7,0.49,0.07,0.35} % HKS 41 70%
+% \definecolor{tudresden_blue60}{cmyk}{0.6,0.42,0.06,0.30} % HKS 41 60%
+% \definecolor{tudresden_blue50}{cmyk}{0.5,0.35,0.05,0.25} % HKS 41 50%
+% \definecolor{tudresden_blue40}{cmyk}{0.4,0.28,0.04,0.20} % HKS 41 40%
+% \definecolor{tudresden_blue30}{cmyk}{0.3,0.21,0.03,0.15} % HKS 41 30%
+% \definecolor{tudresden_blue20}{cmyk}{0.2,0.14,0.02,0.10} % HKS 41 20%
+% \definecolor{tudresden_blue10}{cmyk}{0.1,0.07,0.01,0.05} % HKS 41 10%
+% \definecolor{tudresden_blue80_lessred}{cmyk}{0.8,0.46,0.08,0.40} % HKS 41 80% lessred
+% \definecolor{tudresden_blue70_lessred}{cmyk}{0.7,0.39,0.07,0.35} % HKS 41 70% lessred
+% \definecolor{tudresden_blue60_lessred}{cmyk}{0.6,0.32,0.06,0.30} % HKS 41 60% lessred
+% \definecolor{tudresden_blue50_lessred}{cmyk}{0.5,0.25,0.05,0.25} % HKS 41 50% lessred
+% \definecolor{tudresden_blue20_lessred}{cmyk}{0.2,0.10,0.02,0.10} % HKS 41 20% lessred
+% \definecolor{tudresden_blue10_lessred}{cmyk}{0.1,0.05,0.01,0.05} % HKS 41 10% lessred
+% \definecolor{moviecolor}{rgb}{0.0,0.0,1.0}  % blue
+% \newcommand{\generalcolor}{black}           % color for everything besides headings + footer
+% \newcommand{\titlecolor}{tudresden_blue60_lessred}     % color for frametitle
+% \newcommand{\subtitlecolor}{tudresden_blue60_lessred}  % color for framesubtitle
+% \newcommand{\footcolor}{tudresden_blue}                % color for footer
+% \newcommand{\structurecolor}{tudresden_blue80_lessred} % color for structure elements
+% \newcommand{\alertcolor}{tudresden_blue70_lessred}     % color for alerted text
+% \newcommand{\boxcolor}{tudresden_blue10_lessred}       % color for colorboxes
+% 
+% % content of the footline:
+% \newcommand{\copyas}{\mbox{{$\copyright$ Prof. Dr.-Ing. habil. D. Balzani, 
+% Institut f\"ur Mechanik und Fl\"achentragwerke}}}
+% 
+% \setbeamertemplate{footline}
+% {%
+% \begin{picture}(1,1.3)
+% \put( 1.47,1.30){\textcolor{\footcolor}{\rule{\linewidth}{1.0pt}}}
+% \put( 1.47,0.15){\includegraphics[width=0.12\hsize]{TU_Logo_HKS41.pdf}}
+% \put(10.80,0.46){\scriptsize\textcolor{\footcolor}{\copyas}}
+% \put(25.03,0.15){\includegraphics[width=0.05\hsize,height=0.035\hsize]{logo_imf_blau.png}}
+% \end{picture}
+% }
+% 
+% % define command to change layout on the titleslide:
+% \newcommand{\titleslide}[1]{
+% {
+% \setbeamertemplate{headline}{
+% \begin{picture}(27.94,3.85)
+% \unitlength1cm
+% \put( 0.80, 1.20){\includegraphics[width=0.20\hsize]{TU_Logo_HKS41.pdf}}
+% \put( 0.00, 0.60){\scalebox{1.12}{\textcolor{tudresden_blue}{\rule{\linewidth}{1.0pt}}}}
+% \put( 2.70, 0.18){\scriptsize\textcolor{tudresden_blue}{{\bfseries Fakult\"at Bauingenieurwesen} Institut f\"ur Mechanik und Fl\"achentragwerke}}
+% \put( 0.00, 0.00){\scalebox{1.12}{\textcolor{tudresden_blue}{\rule{\linewidth}{1.0pt}}}}
+% \end{picture}
+% }
+% \setbeamertemplate{footline}{}
+% #1 % #1 = begin{frame}...\end{frame}
+% }
+% }
+
+%-------------------------------------------------------------------
+% list of packages possibly required by old slides (add to 'load packages')
+%-------------------------------------------------------------------
+% \usepackage{defjl}
+% \geometry{headsep=3ex,hscale=0.9}
+% \usepackage{hyperref}
+% \hypersetup{pdftitle={Daniel Balzani},
+%   pdfsubject={Prof. D. Balzani, TU Dresden},
+%   pdfauthor={D. Balzani},
+%   pdfkeywords={pdftex, acrobat},
+%   pdfpagemode=none
+%   }
+% \usepackage{pausejl}
+% %\usepackage{background}
+% \usepackage{caption}
+% \usepackage{babel}
+% \usepackage{theorem}
+% \usepackage{jlslide}
+% \usepackage{fancybox}
+% \usepackage{pifont}      % Bindet zusaetzliche Schriften ein
+%                          % z.B. eingekreiste Zahlen
+% \usepackage{rotating}    % Rotieren von diversen Dingen
+% 
+% %%%%%%%%%%%%%% Tabellen Pakete
+% \usepackage{multirow}    % Mehrere Zeilen zusammenfassen
+% \usepackage{dcolumn}     % Definiton von Spaltentypen, die am
+%                          % Dezimaltrennzeichen ausgerichtet sind
+% \usepackage{tabularx}    % Ermoeglicht Tabelle ueber die gesamte
+%                          % Textsatzbreite
+% \usepackage{colortbl}    % Tabellen farbig hinterlegen
+
+
+
+%-------------------------------------------------------------------
+% list of commands possibly required by old slides (add after 'load slides')
+%-------------------------------------------------------------------
+% % \newcommand{\N}{\mathbb{N}}
+% % \newcommand{\C}{\mathbb{C}}
+% % \newcommand{\M}{\mathbb{M}}
+% % \renewcommand{\S}{\mathbb{S}}
+% % \newcommand{\Oint}{\underset{\Omega}{\int}}
+% % \newcommand{\einsdiv}[1]{ \frac{1}{#1} }
+% % \newcommand{\Lp}[1]{L^{#1}(\Omega)}
+% % \newcommand{\Wmp}[2]{W^{#1,#2}(\Omega)}
+% % \newcommand{\Hmp}[2]{H^{#1,#2}(\Omega)}
+% % \newcommand{\Co}{C_0^{\infty}(\Omega)}
+% % \newcommand{\Hmpo}[2]{H_{\circ}^{#1,#2}(\Omega)}
+% % \newcommand{\Hgam}{H_{\circ}^{1,2}(\Omega,\Gamma)}
+% % \newcommand{\Cgam}{C^\infty(\Omega,\Gamma)}
+% % \newcommand{\HmpOnorm}[3]{{\|#1\|}_{#2,#3,\Omega}}
+% % \newcommand{\LpOnorm}[2]{{\|#1\|}_{#2,\Omega}}
+% % \newcommand{\embedding}{\hookrightarrow}
+% % \newcommand{\norm}[1]{\|#1\|}
+% % \newcommand{\Skalint}[2]{{\langle #1,#2\rangle}_{\Omega}}
+% % \newcommand{\Skalprod}[2]{\langle #1,#2\rangle}
+% % \newcommand{\abs}[1]{|#1|}
+% % \newcommand{\integab}[2]{\underset{\negthickspace\negthickspace{#1}}
+% %                          {\overset{\quad{#2}}{\;\int}}}
+% % \newcommand{\Mprod}[2]{ {\langle #1 ,#2\rangle} }
+% % \newcommand{\id}{ {1\!\!\!\:1} }
+% % \newcommand{\Rnorm}[1]{ {{\|#1\|}_{\R^3}} }
+% % \newcommand{\Rprod}[2]{ {\langle #1,#2\rangle}_{\R^{3}} }
+% % \newcommand{\kr}[1]{%
+% %          \fboxsep0.05cm\scalebox{1.0}{$\ovalbox{#1}$}}
+% % %--Sarah Brinkhues--------------------------------------------
+% % \newcommand{\baa}{{\mbox{\boldmath$a$}}}
+% % \newcommand{\fn}{\footnotesize}
+% % %-------------------------------------------------------------------
+% % % fr Folien von Prof. A. Klawonn
+% % \newcommand{\vvec}[1]{{\mathbf{#1}}}
+% % \def\Ktilde{{\widetilde{K}}}
+
+
+
+%-------------------------------------------------------------------
+% TODOS/ improvements
+%-------------------------------------------------------------------
+% -global definition of size of title/ subtitle etc.
+% -for others browse Ctrl+f 'TODO'
+% -overall more formal implementation according to the beamer user guide: "http://ftp.gwdg.de/pub/ctan/macros/latex/contrib/beamer/doc/beameruserguide.pdf" [06/02/2018] 
+% globally set titlefont to be all caps

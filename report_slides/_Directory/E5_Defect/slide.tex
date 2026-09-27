@@ -1,0 +1,72 @@
+\frametitle{Per Mechanism, and a Defect Worth Naming}
+\footnotesize
+
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\centering
+$\muF$ by the generator that produced the error.
+\vspace{1mm}
+
+{\scriptsize
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Mechanism & w256 & \textbf{w768} & Damp.\ Jac. & GS \\
+\midrule
+smooth & $0.0907$ & \textbf{$0.0129$} & $0.4554$ & $0.4029$ \\
+multiscale & $0.6144$ & \textbf{$0.0978$} & $0.4345$ & $0.3711$ \\
+localized & $0.4270$ & \textbf{$0.0627$} & $0.4461$ & $0.4155$ \\
+algebraic & $0.7675$ & \textbf{$0.2503$} & $0.3961$ & $0.3325$ \\
+mixed & $0.6856$ & \textbf{$0.1853$} & $0.4166$ & $0.3523$ \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1.5mm}
+\raggedright
+At width $256$ the network looked strong on smooth errors and weak on algebraic ones, which
+suggested the learned and classical steps fail in \emph{opposite regimes} and ought to be
+combined. \alert{That reading does not survive the wider run.} At width $768$ the network
+beats Gauss--Seidel on \emph{every} mechanism --- including the purely algebraic
+coefficient-space noise it appeared worst at, by $0.2503$ against $0.3325$. There is no
+complementarity to exploit; there was an under-capacity branch and a mechanism whose errors
+it could not represent.
+\end{column}
+\begin{column}{0.49\textwidth}
+\centering
+\textbf{The defect: $\mathbb{P}(\rC>1)=1.0$ in \emph{both} runs.}
+\vspace{1mm}
+
+{\scriptsize
+\begin{tabular}{@{}p{4.1cm}rrr@{}}
+\toprule
+& w256 & w768 & classical best \\
+\midrule
+$\muF$ (complement) & $0.5803$ & $0.1456$ & SymGS $0.1889$ \\
+$\muC$ (coarse) & $1.0400$ & $1.0928$ & SymGS $0.4695$ \\
+$\max\rC$ & $1.0837$ & $1.1970$ & --- \\
+$\mathbb{P}(\rC>1)$ & $1.00$ & $1.00$ & $0.00$ \\
+\midrule
+$\muC/\muF$ & $1.79$ & $7.50$ & $2.49$ \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1.5mm}
+\raggedright
+The learned step is \alert{the only method in the table that grows the coarse component},
+and better complement reduction came with \emph{worse} coarse behaviour. Every classical
+smoother reduces it, because a classical smoother is a contraction on the whole space. The
+network's objective never saw $e_C$, so its behaviour there is an uncontrolled
+extrapolation --- and it turns out to be expansive rather than zero. This does not destroy
+selectivity ($\muC/\muF=7.50$), but it is not nothing, and it is visible \emph{only because
+the two components are measured separately}: a protocol reporting a single overall
+reduction factor would have hidden it completely.
+\end{column}
+\end{columns}
+
+\bre
+What this predicts for Stage~II. $\muC=1.0928$ is an \emph{upper bound} on the leak
+$\lambda$, not evidence that $\lambda>0$: a step that amplified $e_C$ purely within
+$\operatorname{range}(P)$ would have $\muC>1$, $\lambda=0$, and would cost the cycle
+nothing. What \emph{is} established is comparative and harder to dismiss --- the learned
+step is the only one that grows $e_C$ at all, and it grows it \emph{more} the better it
+gets at its actual job.
+\ere

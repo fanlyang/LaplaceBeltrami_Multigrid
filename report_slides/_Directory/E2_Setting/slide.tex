@@ -1,0 +1,59 @@
+\frametitle{The Stage~I Experiment, and What Is Asserted Rather Than Assumed}
+\footnotesize
+
+Stage~I asks one question and answers it with one table: \emph{does the learned step,
+applied to one level, reduce the error components the coarse grid cannot reach ---
+preferentially, and better than the classical relaxations?} It is scored by the
+per-sample reduction factor and its mean, $\rF(e_F)=\normA{e_F-\Bnet(Ae_F,X)}/\normA{e_F}$
+and $\muF=\mathbb{E}[\rF]$, with $\muC$ defined identically on the same test errors;
+selectivity is $\muF\ll\muC$. Median, sd, p95, maximum and $\mathbb{P}(\rho>1)$ are
+recorded beside every mean, because a mean cannot distinguish a method that reduces
+everything a little from one that reduces most samples a lot and amplifies a few.
+
+\vspace{1mm}
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+{\scriptsize
+\begin{tabular}{@{}p{2.6cm}p{9.6cm}@{}}
+\toprule
+Item & Setting \\
+\midrule
+Hierarchy & six levels, $L_0$ with $16$ unknowns through $L_5$ with $16384$, uniformly
+refined. \textbf{Level used: $\ell=3$}, $n=1024$ unknowns, coarse $n_c=256$,
+\emph{complement dimension $768$} \\[2pt]
+Coarse operator & Galerkin $A_c=P^{\mathsf T}AP$; $P$ is $1024\times256$, $9$ nonzeros
+per column, row sums exactly $1$ \\[2pt]
+Data & five generators, splits $2048/512/1024$ \\[2pt]
+Model & branch MLP, depth $4$, bias-free, \emph{width the only variable}; trunk frozen
+orthonormal Fourier, $K=16$ \\[2pt]
+Schedule & batch $256$, lr $3\times10^{-3}$, $1200$ epochs, patience $300$; seed
+$20260925$ applied \emph{before} the model is constructed \\
+\bottomrule
+\end{tabular}}
+\end{column}
+\begin{column}{0.47\textwidth}
+\raggedright
+Every statement the experiment rests on is \alert{asserted by the program} on its smoke
+test and re-measured on the actual data splits. Nothing is assumed:
+
+\vspace{1mm}
+{\scriptsize
+\begin{tabular}{@{}p{4.4cm}rl@{}}
+\toprule
+Identity & Rel.\ residual & Where \\
+\midrule
+$e_C^{\mathsf T}Ae_F=0$ & $1.4\times10^{-15}$ & projector \\[1pt]
+$P^{\mathsf T}Ae_F=0$ & $2.6\times10^{-14}$ & projector \\[1pt]
+$\normA{e}^2=\normA{e_C}^2+\normA{e_F}^2$ & $4.4\times10^{-15}$ & projector \\[1pt]
+$\lambda_{\min}(A_c)>0$ & $0.274290$ & coarse op \\[1pt]
+$\max\|P^{\mathsf T}r_F\|/\|r_F\|$ & $2.5\times10^{-14}$ & splits \\[1pt]
+$\min\|P^{\mathsf T}r_C\|/\|r_C\|$ & $1.02$ & splits \\
+\bottomrule
+\end{tabular}}
+
+\vspace{1mm}
+The last two rows confirm the direct sum on \emph{real data}: training inputs lie in
+$\ker(P^{\mathsf T})$ to round-off, coarse residuals do not, and the two input sets
+therefore meet only at the origin.
+\end{column}
+\end{columns}

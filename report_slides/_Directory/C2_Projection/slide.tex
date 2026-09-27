@@ -1,0 +1,42 @@
+\frametitle{The Correction Is the Complement Projector}
+\footnotesize
+
+\begin{block}{Proposition}
+Let $A_c=P^{\mathsf T}AP$ be the Galerkin coarse operator and let $R=P^{\mathsf T}$. Then
+\[
+PA_c^{-1}RA \;=\; P\bigl(P^{\mathsf T}AP\bigr)^{-1}P^{\mathsf T}A \;=\; \PiC ,
+\qquad\text{and hence}\qquad
+C_h \;=\; I-\PiC \;=\; \PiF ,
+\]
+where $\PiC$ is the $A$-orthogonal projection onto $\operatorname{range}(P)$ and
+$\PiF=I-\PiC$ its $A$-orthogonal complement.
+\end{block}
+
+{\scriptsize\emph{Proof.} The middle factor is precisely the stated expression.
+$\PiC^2=\PiC$ follows by cancelling $(P^{\mathsf T}AP)^{-1}(P^{\mathsf T}AP)$, and
+$\PiC^{\mathsf T}A=A\PiC$ is immediate from the symmetry of $A$ and $A_c$.
+\hfill$\blacksquare$}
+
+\vspace{1.5mm}
+Two things are worth stating plainly.
+\begin{itemize}
+\item It is an \alert{identity, not an approximation}: it holds exactly and is checkable in
+the same code that produced the experiment, with no new data.
+\item It is the reason the two-level analysis below is possible at all --- because
+$C_h=\PiF$ exactly, the two-grid error propagator is
+\[
+\ETG=S_{\mathrm{post}}\bigl(I-PA_c^{-1}RA\bigr)S_{\mathrm{pre}}
+=S_{\mathrm{post}}\,\PiF\,S_{\mathrm{pre}},
+\]
+with no error term to account for. Anything in the cycle that is not a smoothing sweep is a
+projection, and a projection is something one can reason about exactly.
+\end{itemize}
+
+\bre
+The identity uses an \emph{exact} solve of the coarse problem. In practice the coarsest
+level is small enough to be solved directly, so this is the configuration the solver
+actually runs. Where the recursion continues to further levels, the two-grid factor becomes
+the appropriate bound rather than an identity --- the classical distinction between a
+two-grid analysis and a V-cycle analysis \cite{Trottenberg}, and exactly the gap Stage~III
+has to close.
+\ere

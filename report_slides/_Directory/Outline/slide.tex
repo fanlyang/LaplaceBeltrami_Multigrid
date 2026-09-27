@@ -1,0 +1,29 @@
+\frametitle{Outline}
+\small
+
+\begin{enumerate}
+
+    \item \textbf{The question and the programme.} A classical solver that already
+    works, and the narrower thing a learned smoother can therefore be asked for: the
+    correction that \emph{one node} of the existing cycle computes.
+
+    \item \textbf{The model problem.} The torus, the variable-coefficient
+    Laplace--Beltrami problem, the manufactured solution, and the surface finite element
+    discretisation.
+
+    \item \textbf{Multigrid, and how the error propagates.} The two-level correction, the
+    identity $C_h = \PiF$, and the splitting $e = e_C + e_F$ that decides what each
+    operation of the cycle is responsible for.
+
+    \item \textbf{The learned smoother.} The three available objectives, the one used and
+    why, the norm, the component, the constraints --- and what is deliberately left out of
+    the loss and what that costs.
+
+    \item \textbf{Numerical experiments.} The classical reference, the Stage~I
+    measurement with its two capacity diagnostics, the answer, and one defect stated
+    plainly.
+
+    \item \textbf{Conclusions.} What is established, the protocol a cycle result must be
+    judged by, and the sequence of next experiments.
+
+\end{enumerate}
