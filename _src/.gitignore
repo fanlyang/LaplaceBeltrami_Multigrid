@@ -1,0 +1,8 @@
+# Generated outputs of the Overleaf publish scripts -- regenerate, don't commit.
+insert.js
+clsi_request.json
+clsi_response.json
+dump.json
+*.out
+ov_render/
+overleaf_build.pdf
