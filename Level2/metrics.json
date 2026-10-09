@@ -1,0 +1,93 @@
+{
+  "full_error_test": {
+    "Coarse correction only": {
+      "mean_factor": 0.7880927867011928,
+      "mean_squared_factor": 0.665932667849125,
+      "p95": 0.9686828259236705,
+      "max_factor": 0.9924164630021061,
+      "amplified_fraction": 0.0
+    },
+    "Jacobi + coarse": {
+      "mean_factor": 0.4699807113209521,
+      "mean_squared_factor": 0.26548917747595996,
+      "p95": 0.7810821051732034,
+      "max_factor": 1.34880454884123,
+      "amplified_fraction": 0.018
+    },
+    "Damped Jacobi + coarse": {
+      "mean_factor": 0.32180189556320954,
+      "mean_squared_factor": 0.10730244300008007,
+      "p95": 0.4166285145642437,
+      "max_factor": 0.6024962317252205,
+      "amplified_fraction": 0.0
+    },
+    "GS + coarse": {
+      "mean_factor": 0.24298412460020155,
+      "mean_squared_factor": 0.061388521880056585,
+      "p95": 0.3156778874883149,
+      "max_factor": 0.4030968627513686,
+      "amplified_fraction": 0.0
+    },
+    "SGS + coarse": {
+      "mean_factor": 0.13261143765812833,
+      "mean_squared_factor": 0.01879834596815816,
+      "p95": 0.20797671012429533,
+      "max_factor": 0.2839480565282729,
+      "amplified_fraction": 0.0
+    },
+    "DeepONet + coarse": {
+      "mean_factor": 0.05981916357447653,
+      "mean_squared_factor": 0.004262064126933984,
+      "p95": 0.0901181266357223,
+      "max_factor": 0.10798041429521502,
+      "amplified_fraction": 0.0
+    }
+  },
+  "coarse_error_test": {
+    "Coarse only": {
+      "mean_factor": 0.03889674456026735,
+      "mean_squared_factor": 0.00152340585461424,
+      "p95": 0.04435741775284352,
+      "max_factor": 0.048952137600689734,
+      "amplified_fraction": 0.0
+    },
+    "DeepONet + coarse": {
+      "mean_factor": 0.03707305313888163,
+      "mean_squared_factor": 0.001382655452694388,
+      "p95": 0.04192876425308069,
+      "max_factor": 0.04650376033455342,
+      "amplified_fraction": 0.0
+    }
+  },
+  "best_validation_loss": 0.00422225858643651,
+  "relative_galerkin_defect": 0.03466091097897665,
+  "training_seconds": 446.5657624999985,
+  "config": {
+    "data_url": "https://raw.githubusercontent.com/fanlyang/LaplaceBeltrami_Multigrid/deeponet-smoother/level_data",
+    "seed": 20261005,
+    "train_samples": 4000,
+    "val_samples": 500,
+    "test_samples": 500,
+    "batch_size": 128,
+    "epochs": 600,
+    "lr": 5e-05,
+    "patience": 100,
+    "branch_kind": "mlp",
+    "width": 1024,
+    "fourier_modes": 16,
+    "dtype": "float32",
+    "device": "auto",
+    "save_outputs": true,
+    "output_dir": "stage2_1",
+    "coarse_mode": "assembled",
+    "coarse_source": null
+  },
+  "A_shape": [
+    256,
+    256
+  ],
+  "P_shape": [
+    256,
+    64
+  ]
+}
